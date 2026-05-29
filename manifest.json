@@ -1,10 +1,10 @@
 {
   "manifest_version": "0.3",
   "name": "markitdown-attachments",
-  "display_name": "MarkItDown Attachments (token-free)",
-  "version": "1.0.0",
-  "description": "Convert Claude chat & project attachments to Markdown files locally — without spending context tokens on the file contents.",
-  "long_description": "Wraps Microsoft's MarkItDown library as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). This lets Claude pre-process a whole folder of attachments for effectively zero context tokens, then read individual Markdown files only when their content is actually needed.\n\nTools: `convert_attachments_to_markdown` (batch convert files/dirs/globs), `list_convertible_attachments` (enumerate, no content), `convert_one` (single file), and `peek_markdown` (opt-in, small capped preview).",
+  "display_name": "MarkItDown Attachments (token-free + OCR)",
+  "version": "2.0.0",
+  "description": "Convert Claude chat & project attachments to Markdown files locally — with OCR — without spending context tokens on the file contents.",
+  "long_description": "Wraps Microsoft's MarkItDown as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). Converting a whole folder of attachments costs effectively zero context tokens.\n\nv2 adds: OCR (Tesseract) for images and scanned/image-only PDFs with automatic orientation detection; Google Drive pointer files (.gdoc/.gslides/.gsheet/.gdrive) recognised and turned into clickable 'Open in Drive' link notes; collision-safe output names (same-stem files become name.pdf.md / name.docx.md instead of overwriting); structure-preserving output; and a rich, still-token-free summary (converted / OCR'd / drive-links / empty / skipped / failed).\n\nTools: convert_attachments_to_markdown, list_convertible_attachments, convert_one, peek_markdown, ocr_capabilities.",
   "author": {
     "name": "Aninda",
     "url": "https://github.com/GRU-953"
@@ -21,6 +21,8 @@
       "env": {
         "MARKITDOWN_INPUT_DIR": "${user_config.input_directory}",
         "MARKITDOWN_OUTPUT_DIR": "${user_config.output_directory}",
+        "MARKITDOWN_OCR": "${user_config.ocr_mode}",
+        "MARKITDOWN_OCR_LANG": "${user_config.ocr_lang}",
         "MARKITDOWN_ENABLE_PLUGINS": "${user_config.enable_plugins}"
       }
     }
@@ -28,11 +30,11 @@
   "tools": [
     {
       "name": "convert_attachments_to_markdown",
-      "description": "Batch-convert files, directories, and globs to Markdown FILES on disk. Returns only metadata (paths/sizes/status), never the content — token-free."
+      "description": "Batch-convert files, directories, and globs to Markdown FILES on disk (with optional OCR). Returns only metadata — token-free."
     },
     {
       "name": "list_convertible_attachments",
-      "description": "List convertible files in a directory (paths, extensions, sizes only) without converting or reading them."
+      "description": "List convertible files in a directory (paths/sizes only); Google Drive pointer stubs reported separately."
     },
     {
       "name": "convert_one",
@@ -41,6 +43,10 @@
     {
       "name": "peek_markdown",
       "description": "Opt-in: return a small, capped preview (default 400 chars) of a generated Markdown file."
+    },
+    {
+      "name": "ocr_capabilities",
+      "description": "Report whether Tesseract OCR is available, its path, version, and installed languages."
     }
   ],
   "user_config": {
@@ -56,6 +62,20 @@
       "description": "Optional. Where generated .md files are written. If empty, each .md is written next to its source file.",
       "required": false
     },
+    "ocr_mode": {
+      "type": "string",
+      "title": "OCR mode",
+      "description": "auto = OCR images & image-only PDFs (default); off = never; force = OCR every image/PDF. Requires Tesseract.",
+      "default": "auto",
+      "required": false
+    },
+    "ocr_lang": {
+      "type": "string",
+      "title": "OCR language(s)",
+      "description": "Tesseract language code(s), e.g. 'eng' or 'eng+ben'. Install extra languages with: brew install tesseract-lang.",
+      "default": "eng",
+      "required": false
+    },
     "enable_plugins": {
       "type": "boolean",
       "title": "Enable MarkItDown plugins",
@@ -67,6 +87,7 @@
   "keywords": [
     "markdown",
     "attachments",
+    "ocr",
     "pdf",
     "docx",
     "xlsx",

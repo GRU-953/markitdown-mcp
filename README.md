@@ -1,37 +1,56 @@
-# MarkItDown Attachments — a token-free MCP server
+# MarkItDown Attachments — a token-free MCP server (with OCR)
 
 Convert Claude **chat & project attachments** (and any local files) to Markdown
 using Microsoft's [MarkItDown](https://github.com/microsoft/markitdown), **without
-spending context tokens on the file contents**.
+spending context tokens on the file contents** — now with **OCR** for images and
+scanned PDFs.
 
 ## Why this exists
 
 The stock [`markitdown-mcp`](https://github.com/microsoft/markitdown/tree/main/packages/markitdown-mcp)
-server returns the converted Markdown as the tool result — so it lands in the
+returns the converted Markdown as the tool result — so it lands in the
 conversation and consumes tokens. This server instead converts each file
 **locally** and **writes a `.md` file to disk**, returning only compact metadata
-(output paths, byte/character counts, status). Converting a folder full of
-attachments therefore costs effectively **zero context tokens**; Claude can read
-individual `.md` files later, only when their content is actually needed.
+(paths, byte/char counts, status). Converting a folder of attachments therefore
+costs effectively **zero context tokens**; Claude reads individual `.md` files
+later, only when their content is actually needed.
+
+> **Measured:** on a real 76-file / 94 MB corpus, one batch call returned a
+> **25 KB** metadata result while writing **1.75 M characters** of Markdown to
+> disk — **69× more content than tokens returned.**
 
 ## Supported formats
 
 PDF · Word (`.docx`) · PowerPoint (`.pptx`) · Excel (`.xlsx`/`.xls`) · images
-(`.png/.jpg/...`, EXIF + OCR) · audio (`.wav/.mp3/...`, metadata + optional
-transcription) · HTML · CSV/TSV · JSON · XML · EPub · ZIP (recurses) · Outlook
-`.msg` · Jupyter `.ipynb`, and more.
+(`.png/.jpg/...` — **OCR'd**) · audio (`.wav/.mp3/...`) · HTML · CSV/TSV · JSON ·
+XML · EPub · ZIP (recurses) · Outlook `.msg` · Jupyter `.ipynb`, and more.
+Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
+"Open in Drive" link notes.
+
+## What's new in v2
+
+- **OCR** (Tesseract) for images and scanned/image-only PDFs, with automatic
+  page-orientation detection (sideways scans are read correctly). Controlled by
+  the `ocr` argument: `auto` (default), `off`, or `force`.
+- **Drive pointer links** — `.gdoc` etc. are turned into a small Markdown note
+  with the Google Drive URL (no raw JSON, no embedded email).
+- **Collision-safe names** — same-stem files of different types become
+  `report.pdf.md` / `report.docx.md` instead of overwriting or opaque `-2`.
+- **Structure-preserving output** — sub-folders are mirrored under `output_dir`.
+- **Rich summary** — `converted / OCR'd / drive-links / empty / skipped / failed`
+  plus totals; text-less photos are reported as `empty` rather than written blank.
 
 ## Tools
 
 | Tool | What it does | Returns |
 |------|--------------|---------|
-| `convert_attachments_to_markdown` | Batch-convert files, directories, and globs to `.md` files | metadata only (paths/sizes/status) |
-| `list_convertible_attachments` | Enumerate convertible files in a directory | paths/extensions/sizes |
-| `convert_one` | Convert a single file to a `.md` file | metadata only |
-| `peek_markdown` | **Opt-in** small preview of a generated `.md` (default 400 chars, capped at 4000) | short text snippet |
+| `convert_attachments_to_markdown` | Batch-convert files/dirs/globs to `.md` (with OCR) | metadata only |
+| `list_convertible_attachments` | Enumerate convertible files; pointers listed separately | paths/sizes |
+| `convert_one` | Convert a single file to a `.md` | metadata only |
+| `peek_markdown` | **Opt-in** small preview of a generated `.md` (≤4000 chars) | short snippet |
+| `ocr_capabilities` | Report Tesseract availability / version / languages | small object |
 
-Only `peek_markdown` ever returns file text, and only a small capped slice you
-explicitly request. The conversion tools never do.
+Only `peek_markdown` ever returns file text, and only a small slice you request.
 
 ## Configuration
 
@@ -40,24 +59,29 @@ Set via environment variables (Claude Code `.mcp.json` `env`) or the extension's
 
 | Variable / config | Meaning |
 |-------------------|---------|
-| `MARKITDOWN_INPUT_DIR` / *Default attachments folder* | Folder scanned when you don't name specific files |
-| `MARKITDOWN_OUTPUT_DIR` / *Markdown output folder* | Where `.md` files are written (default: next to each source) |
-| `MARKITDOWN_ENABLE_PLUGINS` / *Enable MarkItDown plugins* | Allow third-party markitdown plugins (default off) |
+| `MARKITDOWN_INPUT_DIR` / *Default attachments folder* | Folder scanned when you don't name files |
+| `MARKITDOWN_OUTPUT_DIR` / *Markdown output folder* | Where `.md` files go (default: next to source) |
+| `MARKITDOWN_OCR` / *OCR mode* | `auto` (default) · `off` · `force` |
+| `MARKITDOWN_OCR_LANG` / *OCR language(s)* | e.g. `eng` or `eng+ben` |
+| `MARKITDOWN_OCR_MAX_PAGES` | Max PDF pages to OCR per file (default 50) |
+| `MARKITDOWN_ENABLE_PLUGINS` / *Enable plugins* | Third-party markitdown plugins (default off) |
 
 ## Install
 
 ### Build the runtime (once)
 
 ```bash
-./install.sh        # creates .venv next to this README and installs deps
+./install.sh                       # creates .venv + installs Python deps
+brew install tesseract             # OCR engine (optional but recommended)
+# brew install tesseract-lang      # extra OCR languages (e.g. Bengali)
 ```
 
-Requires Python **3.10–3.13** (3.12 recommended; `brew install python@3.12`).
+Requires Python **3.10–3.13** (3.12 recommended). Without Tesseract the server
+still runs — it just reports OCR as unavailable.
 
 ### Claude Code
 
-Add to your project's `.mcp.json` (paths are absolute; adjust to where you
-cloned this):
+Add to your project's `.mcp.json` (absolute paths):
 
 ```json
 {
@@ -75,23 +99,32 @@ Reload the project; approve the server when prompted.
 
 ### Claude Desktop
 
-Install the packaged extension `dist/markitdown-attachments.mcpb`:
-**Settings → Extensions → Install from file…**, then pick the `.mcpb`. (The
-bundle's manifest expects a `.venv` beside the server — run `install.sh` inside
-the installed extension folder if needed.) Restart the app.
+Install `dist/markitdown-attachments.mcpb` via **Settings → Extensions → Install
+from file…**, then run `install.sh` inside the installed extension folder so its
+`.venv` is created. Restart the app.
 
 ## Usage examples
 
-> "Convert every attachment in `~/Downloads/contracts` to markdown."
-> → `convert_attachments_to_markdown(input_dir="~/Downloads/contracts")`
+> "Convert every attachment in `~/Documents/Lex-Adex` to markdown."
+> → `convert_attachments_to_markdown(input_dir="~/Documents/Lex-Adex", write_index=True)`
 
-> "Turn these two files into markdown next to them: report.pdf, deck.pptx"
-> → `convert_attachments_to_markdown(sources=["report.pdf","deck.pptx"])`
+> "OCR these scanned PDFs into markdown next to them."
+> → `convert_attachments_to_markdown(sources=["scan1.pdf","scan2.pdf"], ocr="force")`
 
-Claude gets back a list of generated `.md` paths — no document text — and can
-open any of them on demand.
+Claude gets back the list of generated `.md` paths — no document text — and opens
+any of them on demand.
+
+## Testing
+
+`tests/test_harness.py` drives the server over the real MCP protocol against a
+folder you point it at, checking every tool, OCR, pointer handling, collision
+safety, idempotency, accuracy spot-checks, and token-free guarantees:
+
+```bash
+../.venv/bin/python tests/test_harness.py full /path/to/your/files
+```
 
 ## Credits
 
-Built on [microsoft/markitdown](https://github.com/microsoft/markitdown) (MIT).
-This wrapper is MIT-licensed.
+Built on [microsoft/markitdown](https://github.com/microsoft/markitdown) (MIT) and
+[Tesseract OCR](https://github.com/tesseract-ocr/tesseract). This wrapper is MIT-licensed.

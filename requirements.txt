@@ -1,8 +1,14 @@
-# MarkItDown Attachments MCP server — runtime dependencies.
+# MarkItDown Attachments MCP server — Python dependencies.
 # Targets Python 3.10–3.13 (markitdown's supported range). On 3.14 some wheels
 # (e.g. youtube-transcript-api, onnxruntime) may be unavailable; install.sh
 # prefers a 3.12 interpreter for this reason.
 mcp~=1.8.0
 # File-attachment extras only (PDF, Word, Excel, PowerPoint, Outlook .msg, audio).
 # Deliberately excludes the YouTube + Azure cloud extras from markitdown[all].
+# (pdfminer.six + pypdfium2 come via the pdf extra; pypdfium2 is reused for OCR rasterization.)
 markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription]>=0.1.1,<0.2.0
+# OCR for images & scanned PDFs. Requires the Tesseract *system* binary too:
+#   macOS:  brew install tesseract   (and `brew install tesseract-lang` for non-English)
+#   Debian: apt-get install tesseract-ocr
+# Without Tesseract the server still runs — it just reports OCR as unavailable.
+pytesseract>=0.3.10
