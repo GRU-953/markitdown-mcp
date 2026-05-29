@@ -1,0 +1,8 @@
+# Python virtual environment (machine-specific; recreate with ./install.sh)
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor cruft
+.DS_Store

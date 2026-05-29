@@ -1,0 +1,94 @@
+{
+  "manifest_version": "0.3",
+  "name": "markitdown-attachments",
+  "display_name": "MarkItDown Attachments (token-free)",
+  "version": "1.0.0",
+  "description": "Convert Claude chat & project attachments to Markdown files locally — without spending context tokens on the file contents.",
+  "long_description": "Wraps Microsoft's MarkItDown library as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). This lets Claude pre-process a whole folder of attachments for effectively zero context tokens, then read individual Markdown files only when their content is actually needed.\n\nTools: `convert_attachments_to_markdown` (batch convert files/dirs/globs), `list_convertible_attachments` (enumerate, no content), `convert_one` (single file), and `peek_markdown` (opt-in, small capped preview).",
+  "author": {
+    "name": "Aninda",
+    "url": "https://github.com/aninda"
+  },
+  "icon": "icon.png",
+  "server": {
+    "type": "python",
+    "entry_point": "server/markitdown_attachments_server.py",
+    "mcp_config": {
+      "command": "${__dirname}/.venv/bin/python",
+      "args": [
+        "${__dirname}/server/markitdown_attachments_server.py"
+      ],
+      "env": {
+        "MARKITDOWN_INPUT_DIR": "${user_config.input_directory}",
+        "MARKITDOWN_OUTPUT_DIR": "${user_config.output_directory}",
+        "MARKITDOWN_ENABLE_PLUGINS": "${user_config.enable_plugins}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "convert_attachments_to_markdown",
+      "description": "Batch-convert files, directories, and globs to Markdown FILES on disk. Returns only metadata (paths/sizes/status), never the content — token-free."
+    },
+    {
+      "name": "list_convertible_attachments",
+      "description": "List convertible files in a directory (paths, extensions, sizes only) without converting or reading them."
+    },
+    {
+      "name": "convert_one",
+      "description": "Convert a single file to a Markdown file on disk; returns only metadata."
+    },
+    {
+      "name": "peek_markdown",
+      "description": "Opt-in: return a small, capped preview (default 400 chars) of a generated Markdown file."
+    }
+  ],
+  "user_config": {
+    "input_directory": {
+      "type": "directory",
+      "title": "Default attachments folder",
+      "description": "Optional. Folder scanned when you ask to convert attachments without naming specific files.",
+      "required": false
+    },
+    "output_directory": {
+      "type": "directory",
+      "title": "Markdown output folder",
+      "description": "Optional. Where generated .md files are written. If empty, each .md is written next to its source file.",
+      "required": false
+    },
+    "enable_plugins": {
+      "type": "boolean",
+      "title": "Enable MarkItDown plugins",
+      "description": "Allow third-party markitdown plugins (off by default).",
+      "default": false,
+      "required": false
+    }
+  },
+  "keywords": [
+    "markdown",
+    "attachments",
+    "pdf",
+    "docx",
+    "xlsx",
+    "pptx",
+    "conversion",
+    "markitdown",
+    "token-free"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/aninda/markitdown-attachments-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aninda/markitdown-attachments-mcp"
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}
