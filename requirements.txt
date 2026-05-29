@@ -12,3 +12,8 @@ markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription]>=0.1.1,<0.2.0
 #   Debian: apt-get install tesseract-ocr
 # Without Tesseract the server still runs — it just reports OCR as unavailable.
 pytesseract>=0.3.10
+
+# Optional — local image *descriptions* (vision) for images OCR can't read.
+# Uses the Ollama app + an open-source vision model. No extra Python package is
+# needed ('requests', already pulled in by markitdown, calls Ollama over localhost):
+#   macOS:  brew install ollama && brew services start ollama && ollama pull moondream

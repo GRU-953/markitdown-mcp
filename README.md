@@ -29,6 +29,14 @@ Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
 
 ## Features
 
+- **Parallel batch conversion** — files convert across a **process pool** (true
+  multi-core, bypasses the GIL; ~3.8× on a 10-core Mac). Output names are assigned
+  single-threaded first, so collision-safety stays race-free. `workers` (default
+  = min(8, cores); `1` = sequential).
+- **Local vision LLM (open-source, via Ollama)** — images OCR can't read (photos,
+  diagrams) are **described** by a local model (default `moondream`). Runs entirely
+  locally and the description is written to disk — **no cloud, no API keys, no tokens.**
+  `vision`: `auto` (default), `off`, `force`; no-ops gracefully if Ollama isn't installed.
 - **OCR** (Tesseract) for images and scanned/image-only PDFs, with automatic
   page-orientation detection (sideways scans are read correctly). The `ocr`
   argument: `auto` (default), `off`, `force`, or **`hybrid`** — per-page, keeping
