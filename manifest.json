@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "markitdown-attachments",
   "display_name": "MarkItDown Attachments (token-free + OCR)",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Convert Claude chat & project attachments to Markdown files locally — with OCR — without spending context tokens on the file contents.",
   "long_description": "Wraps Microsoft's MarkItDown as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). Converting a whole folder of attachments costs effectively zero context tokens.\n\nFeatures: OCR (Tesseract) for images and scanned/image-only PDFs with automatic orientation detection, including a 'hybrid' mode that keeps text pages and OCRs only the image pages of mixed PDFs; existing .md/.markdown files are carried through into the output so a folder sweep yields a complete collection; Google Drive pointer files (.gdoc/.gslides/.gsheet/.gdrive) become clickable 'Open in Drive' link notes (no raw JSON / no embedded email); collision-safe output names (name.pdf.md / name.docx.md); structure-preserving output; a 'detail=summary' option to shrink the tool result on very large sweeps (full manifest still written to INDEX.md); and a rich, still-token-free summary.\n\nTools: convert_attachments_to_markdown, list_convertible_attachments, convert_one, peek_markdown, ocr_capabilities.",
   "author": {

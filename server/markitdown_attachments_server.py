@@ -498,7 +498,12 @@ def convert_attachments_to_markdown(
                 continue
             text, meta = _convert_file(path, mode, lang, maxp)
             if not text.strip():
-                empty.append({"source": str(path), "reason": _empty_reason(path, meta)})
+                # Distinguish genuine errors (couldn't process) from legit no-text output.
+                err = meta.get("convert_error") or meta.get("ocr_error")
+                if err:
+                    failed.append({"source": str(path), "error": err})
+                else:
+                    empty.append({"source": str(path), "reason": _empty_reason(path, meta)})
                 continue
             used.add(target)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -610,6 +615,9 @@ def convert_one(
                 target = src.with_name(src.stem + src.suffix + ".md")
         text, meta = _convert_file(src, _ocr_mode(ocr), _ocr_lang(ocr_lang), _ocr_max_pages(ocr_max_pages))
         if not text.strip():
+            err = meta.get("convert_error") or meta.get("ocr_error")
+            if err:
+                return {"ok": False, "source": str(src), "error": err}
             return {"ok": True, "source": str(src), "written": False,
                     "reason": _empty_reason(src, meta), "chars": 0, "method": meta["method"]}
         if target.exists() and not overwrite:

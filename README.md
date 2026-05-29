@@ -45,7 +45,10 @@ Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
 - **Compact results for big sweeps** — `detail="summary"` returns just totals +
   failures + a small sample (~2 KB instead of ~30 KB); the full manifest is in INDEX.md.
 - **Rich summary** — `converted / OCR'd / drive-links / markdown-copied / empty /
-  skipped / failed` plus totals; text-less photos are reported as `empty`.
+  skipped / failed` plus totals. Text-less-but-valid files (e.g. photos) are
+  reported as `empty`; files that genuinely error (corrupt, truncated, 0-byte,
+  unreadable, password-protected) are reported as `failed` — a batch never
+  crashes on a bad file. Stress-tested against corrupt/malformed/unreadable inputs.
 
 ## Tools
 
