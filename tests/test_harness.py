@@ -163,6 +163,23 @@ async def main():
                 obj, raw, _ = await call(s, "convert_one", {"source": str(ptr[0]), "output_path": str(OUT/"p.md")})
                 md = (OUT/"p.md").read_text() if (OUT/"p.md").exists() else ""
                 (ok if obj and obj.get("method") == "drive-link" and "google.com" in md else issue)("pointer -> drive-link note")
+            # hybrid OCR on a pdf
+            pdfs = [p for p in conv if p.suffix.lower() == ".pdf"]
+            if pdfs:
+                o, _, _ = await call(s, "convert_one", {"source": str(pdfs[0]), "output_path": str(OUT/"hy.md"), "ocr": "hybrid"})
+                (ok if (o and o.get("ok") and ("hybrid" in (o.get("method") or "") or o.get("method") == "pdf-text")) else issue)(
+                    f"hybrid pdf -> method={o.get('method') if o else '?'}")
+            # detail=summary returns a compact result (no big converted[] array)
+            o, raw, _ = await call(s, "convert_attachments_to_markdown",
+                                   {"input_dir": CORPUS, "output_dir": str(OUT/"sum"), "detail": "summary", "overwrite": True})
+            (ok if (o and "converted" not in o and "totals" in o) else issue)(f"detail=summary compact ({len(raw)}B, converted[] omitted)")
+            # markdown carry-through (only assert when corpus contains .md/.markdown)
+            mds = [1 for dp, _, fns in os.walk(CORPUS) for fn in fns if fn.lower().endswith((".md", ".markdown"))]
+            if mds:
+                o, _, _ = await call(s, "convert_attachments_to_markdown",
+                                     {"input_dir": CORPUS, "output_dir": str(OUT/"mdc"), "overwrite": True})
+                (ok if (o and o["totals"].get("markdown_copied", 0) > 0) else issue)(
+                    f"markdown carry-through ({o['totals'].get('markdown_copied') if o else '?'} copied of {len(mds)} .md)")
 
     print(f"\n{'='*70}\nREPORT  |  ISSUES: {len(ISSUES)}  WARNINGS: {len(WARNINGS)}")
     for m in ISSUES: print("  ✗", m)

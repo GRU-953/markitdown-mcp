@@ -27,18 +27,25 @@ XML · EPub · ZIP (recurses) · Outlook `.msg` · Jupyter `.ipynb`, and more.
 Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
 "Open in Drive" link notes.
 
-## What's new in v2
+## Features
 
 - **OCR** (Tesseract) for images and scanned/image-only PDFs, with automatic
-  page-orientation detection (sideways scans are read correctly). Controlled by
-  the `ocr` argument: `auto` (default), `off`, or `force`.
-- **Drive pointer links** — `.gdoc` etc. are turned into a small Markdown note
-  with the Google Drive URL (no raw JSON, no embedded email).
+  page-orientation detection (sideways scans are read correctly). The `ocr`
+  argument: `auto` (default), `off`, `force`, or **`hybrid`** — per-page, keeping
+  text pages and OCR-ing only the image pages of mixed PDFs (e.g. a 25 MB report
+  went from 5.5 K → 8.6 K chars by recovering its chart/infographic pages).
+- **Existing markdown carried through** — `.md`/`.markdown` files in the input are
+  copied into the output set (structure-preserved) so a folder sweep yields a
+  *complete* collection, not a partial one. (`include_existing_markdown`, default on.)
+- **Drive pointer links** — `.gdoc` etc. become a small Markdown note with the
+  Google Drive URL (no raw JSON, no embedded email).
 - **Collision-safe names** — same-stem files of different types become
   `report.pdf.md` / `report.docx.md` instead of overwriting or opaque `-2`.
 - **Structure-preserving output** — sub-folders are mirrored under `output_dir`.
-- **Rich summary** — `converted / OCR'd / drive-links / empty / skipped / failed`
-  plus totals; text-less photos are reported as `empty` rather than written blank.
+- **Compact results for big sweeps** — `detail="summary"` returns just totals +
+  failures + a small sample (~2 KB instead of ~30 KB); the full manifest is in INDEX.md.
+- **Rich summary** — `converted / OCR'd / drive-links / markdown-copied / empty /
+  skipped / failed` plus totals; text-less photos are reported as `empty`.
 
 ## Tools
 

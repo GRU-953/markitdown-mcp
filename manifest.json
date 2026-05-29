@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "markitdown-attachments",
   "display_name": "MarkItDown Attachments (token-free + OCR)",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Convert Claude chat & project attachments to Markdown files locally — with OCR — without spending context tokens on the file contents.",
-  "long_description": "Wraps Microsoft's MarkItDown as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). Converting a whole folder of attachments costs effectively zero context tokens.\n\nv2 adds: OCR (Tesseract) for images and scanned/image-only PDFs with automatic orientation detection; Google Drive pointer files (.gdoc/.gslides/.gsheet/.gdrive) recognised and turned into clickable 'Open in Drive' link notes; collision-safe output names (same-stem files become name.pdf.md / name.docx.md instead of overwriting); structure-preserving output; and a rich, still-token-free summary (converted / OCR'd / drive-links / empty / skipped / failed).\n\nTools: convert_attachments_to_markdown, list_convertible_attachments, convert_one, peek_markdown, ocr_capabilities.",
+  "long_description": "Wraps Microsoft's MarkItDown as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). Converting a whole folder of attachments costs effectively zero context tokens.\n\nFeatures: OCR (Tesseract) for images and scanned/image-only PDFs with automatic orientation detection, including a 'hybrid' mode that keeps text pages and OCRs only the image pages of mixed PDFs; existing .md/.markdown files are carried through into the output so a folder sweep yields a complete collection; Google Drive pointer files (.gdoc/.gslides/.gsheet/.gdrive) become clickable 'Open in Drive' link notes (no raw JSON / no embedded email); collision-safe output names (name.pdf.md / name.docx.md); structure-preserving output; a 'detail=summary' option to shrink the tool result on very large sweeps (full manifest still written to INDEX.md); and a rich, still-token-free summary.\n\nTools: convert_attachments_to_markdown, list_convertible_attachments, convert_one, peek_markdown, ocr_capabilities.",
   "author": {
     "name": "Aninda",
     "url": "https://github.com/GRU-953"
@@ -65,7 +65,7 @@
     "ocr_mode": {
       "type": "string",
       "title": "OCR mode",
-      "description": "auto = OCR images & image-only PDFs (default); off = never; force = OCR every image/PDF. Requires Tesseract.",
+      "description": "auto = OCR images & image-only PDFs (default); off = never; force = OCR every image/PDF; hybrid = per-page (OCR only the image pages of mixed PDFs). Requires Tesseract.",
       "default": "auto",
       "required": false
     },

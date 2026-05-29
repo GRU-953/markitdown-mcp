@@ -10,35 +10,31 @@ attachments costs effectively zero context tokens.
 
 Beyond the stock `markitdown-mcp` this server adds:
   • OCR (Tesseract) for images and scanned/image-only PDFs, with automatic
-    orientation detection — controllable via the `ocr` arg ("auto"/"off"/"force").
-  • Google Drive pointer files (.gdoc/.gslides/.gsheet/.gdrive) are recognised
-    and turned into a clickable "Open in Drive" link note (no raw JSON / no PII).
-  • Collision-safe output names: same-stem files of different types become
-    `name.pdf.md` / `name.docx.md` instead of clobbering each other.
-  • Structure-preserving output (mirrors sub-folders under output_dir).
-  • Rich, still-token-free summary: converted / empty / skipped / failed / totals.
+    orientation detection. `ocr`: "auto" (default), "off", "force", or "hybrid"
+    (per-page: keep embedded text, OCR only the sparse/image pages — ideal for
+    mixed image-heavy PDFs).
+  • Existing `.md`/`.markdown` files are carried through into the output set
+    (copied, structure-preserved) so a folder sweep yields a COMPLETE collection.
+  • Google Drive pointer files (.gdoc/.gslides/.gsheet/.gdrive) become clickable
+    "Open in Drive" link notes (no raw JSON / no embedded email).
+  • Collision-safe output names: `name.pdf.md` / `name.docx.md` (no clobber).
+  • Structure-preserving output, rich token-free summary, and `detail="summary"`
+    to shrink the tool result for very large sweeps (full manifest still on disk).
 
-Tools:
-  - list_convertible_attachments   : enumerate files (no content); pointers listed separately
-  - convert_attachments_to_markdown: batch convert files/dirs/globs -> .md files
-  - convert_one                    : convert a single file -> .md file
-  - peek_markdown                  : OPT-IN small capped preview of a generated .md
-  - ocr_capabilities               : report whether/where Tesseract OCR is available
+Tools: convert_attachments_to_markdown, list_convertible_attachments,
+       convert_one, peek_markdown, ocr_capabilities.
 
-Configuration (environment variables; settable via DXT user_config or .mcp.json env):
-  MARKITDOWN_INPUT_DIR       default directory scanned when no `sources` are given
-  MARKITDOWN_OUTPUT_DIR      default directory for generated .md files (else beside source)
-  MARKITDOWN_ENABLE_PLUGINS  "true"/"1"/"yes" to enable markitdown 3rd-party plugins
-  MARKITDOWN_OCR             default OCR mode: "auto" (default) / "off" / "force"
-  MARKITDOWN_OCR_LANG        Tesseract language(s), e.g. "eng" (default) or "eng+ben"
-  MARKITDOWN_OCR_MAX_PAGES   max PDF pages to OCR per file (default 50)
-  TESSERACT_CMD              path to the tesseract binary (auto-detected if unset)
+Config env (also settable via DXT user_config / .mcp.json env):
+  MARKITDOWN_INPUT_DIR, MARKITDOWN_OUTPUT_DIR, MARKITDOWN_ENABLE_PLUGINS,
+  MARKITDOWN_OCR (auto/off/force/hybrid), MARKITDOWN_OCR_LANG (e.g. eng+ben),
+  MARKITDOWN_OCR_MAX_PAGES, TESSERACT_CMD.
 """
 
+import glob as _glob
 import io
 import json
-import glob as _glob
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -56,7 +52,6 @@ for _d in ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"):
 
 mcp = FastMCP("markitdown-attachments")
 
-# File types markitdown can meaningfully convert (used when scanning directories).
 CONVERTIBLE_EXTS = {
     ".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".xlsm",
     ".html", ".htm", ".csv", ".tsv", ".json", ".xml", ".rss", ".atom",
@@ -65,13 +60,12 @@ CONVERTIBLE_EXTS = {
     ".wav", ".mp3", ".m4a", ".flac",
 }
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
-# Google Drive "pointer" files: tiny JSON stubs, no local content.
 POINTER_EXTS = {".gdoc", ".gslides", ".gsheet", ".gdrive"}
-# Never re-convert Markdown into Markdown.
-SKIP_EXTS = {".md", ".markdown"}
+MARKDOWN_EXTS = {".md", ".markdown"}   # carried through (copied), not re-converted
 GATHER_EXTS = CONVERTIBLE_EXTS | POINTER_EXTS
 
-OCR_DPI = 200  # rasterization DPI for scanned-PDF OCR
+OCR_DPI = 200                 # rasterization DPI for scanned-PDF OCR
+HYBRID_PAGE_MIN_CHARS = 80    # in hybrid mode, pages with less text than this get OCR'd
 
 # --------------------------------------------------------------------------- #
 # Small utilities
@@ -84,7 +78,7 @@ def _plugins_enabled() -> bool:
 _MD = None
 def _md() -> MarkItDown:
     global _MD
-    if _MD is None:  # cache one instance (avoids reloading magika on every file)
+    if _MD is None:
         _MD = MarkItDown(enable_plugins=_plugins_enabled())
     return _MD
 
@@ -104,7 +98,7 @@ def _glob_matches(pattern: str) -> list:
 
 def _ocr_mode(v: Optional[str]) -> str:
     v = (v or os.getenv("MARKITDOWN_OCR") or "auto").strip().lower()
-    return v if v in ("auto", "off", "force") else "auto"
+    return v if v in ("auto", "off", "force", "hybrid") else "auto"
 
 
 def _ocr_lang(v: Optional[str]) -> str:
@@ -120,6 +114,14 @@ def _ocr_max_pages(v: Optional[int]) -> int:
     return max(1, int(v))
 
 
+def _is_pointer(path: Path) -> bool:
+    return path.suffix.lower() in POINTER_EXTS
+
+
+def _is_markdown(path: Path) -> bool:
+    return path.suffix.lower() in MARKDOWN_EXTS
+
+
 # --------------------------------------------------------------------------- #
 # OCR (Tesseract via subprocess + stdin pipe — no temp files, robust decoding)
 # --------------------------------------------------------------------------- #
@@ -130,7 +132,6 @@ _TESS_OK = None
 def _tess_cmd() -> str:
     global _TESS_CMD
     if _TESS_CMD is None:
-        import shutil
         cand = (os.getenv("TESSERACT_CMD") or shutil.which("tesseract")
                 or next((p for p in ("/opt/homebrew/bin/tesseract",
                                       "/usr/local/bin/tesseract",
@@ -143,22 +144,18 @@ def _tesseract_ok() -> bool:
     global _TESS_OK
     if _TESS_OK is None:
         try:
-            r = subprocess.run([_tess_cmd(), "--version"], capture_output=True)
-            _TESS_OK = r.returncode == 0
+            _TESS_OK = subprocess.run([_tess_cmd(), "--version"], capture_output=True).returncode == 0
         except Exception:
             _TESS_OK = False
     return _TESS_OK
 
 
 def _ocr_pil(pil, lang: str, psm: int = 1) -> str:
-    """OCR a PIL image. PSM 1 = automatic page segmentation WITH orientation
-    detection, so sideways/upside-down scans are read correctly."""
+    """OCR a PIL image. PSM 1 = auto page segmentation WITH orientation detection."""
     buf = io.BytesIO()
     pil.convert("RGB").save(buf, format="PNG")
-    r = subprocess.run(
-        [_tess_cmd(), "stdin", "stdout", "-l", lang, "--psm", str(psm)],
-        input=buf.getvalue(), capture_output=True,
-    )
+    r = subprocess.run([_tess_cmd(), "stdin", "stdout", "-l", lang, "--psm", str(psm)],
+                       input=buf.getvalue(), capture_output=True)
     return r.stdout.decode("utf-8", "replace")
 
 
@@ -169,7 +166,7 @@ def _ocr_image(path: Path, lang: str) -> str:
 
 
 def _ocr_pdf(path: Path, lang: str, max_pages: int):
-    """Rasterize PDF pages and OCR them. Returns (text, total_pages, pages_done, truncated)."""
+    """OCR every page (rasterize). Returns (text, total_pages, pages_done, truncated)."""
     import pypdfium2 as pdfium
     pdf = pdfium.PdfDocument(str(path))
     try:
@@ -188,13 +185,38 @@ def _ocr_pdf(path: Path, lang: str, max_pages: int):
         pdf.close()
 
 
+def _hybrid_pdf(path: Path, lang: str, max_pages: int):
+    """Per-page: keep embedded text; OCR only sparse/image pages.
+    Returns (text, total_pages, pages_done, truncated, ocr_pages)."""
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        n = len(pdf)
+        done = min(n, max_pages)
+        parts = []
+        ocr_pages = 0
+        for i in range(done):
+            page = pdf[i]
+            tp = page.get_textpage()
+            txt = (tp.get_text_range() or "").strip()
+            tp.close()
+            used = False
+            if len(txt) < HYBRID_PAGE_MIN_CHARS:
+                o = _ocr_pil(page.render(scale=OCR_DPI / 72).to_pil(), lang).strip()
+                if len(o) > len(txt):
+                    txt, used = o, True
+                    ocr_pages += 1
+            page.close()
+            if txt:
+                parts.append(f"<!-- page {i + 1}{' (OCR)' if used else ''} -->\n\n{txt}")
+        return "\n\n".join(parts), n, done, n > done, ocr_pages
+    finally:
+        pdf.close()
+
+
 # --------------------------------------------------------------------------- #
 # Google Drive pointer stubs
 # --------------------------------------------------------------------------- #
-
-def _is_pointer(path: Path) -> bool:
-    return path.suffix.lower() in POINTER_EXTS
-
 
 def _pointer_markdown(path: Path) -> str:
     try:
@@ -224,8 +246,7 @@ def _ocr_needed(ext: str, base_len: int, mode: str) -> bool:
         return False
     if mode == "force":
         return ext in IMAGE_EXTS or ext == ".pdf"
-    # auto: OCR images with no embedded text, and PDFs that extract almost nothing.
-    if ext in IMAGE_EXTS:
+    if ext in IMAGE_EXTS:      # auto
         return base_len < 1
     if ext == ".pdf":
         return base_len < 50
@@ -242,6 +263,22 @@ def _convert_file(path: Path, ocr: str, lang: str, max_pages: int):
         meta["method"] = "drive-link"
         return _pointer_markdown(path), meta
 
+    # Hybrid PDF: per-page text-or-OCR (full coverage, no redundant OCR of text pages).
+    if ocr == "hybrid" and ext == ".pdf":
+        try:
+            text, n, _done, trunc, ocr_pages = _hybrid_pdf(path, lang, max_pages)
+            meta["pages"] = n
+            meta["ocr_truncated"] = trunc
+            if ocr_pages:
+                meta["ocr_used"] = True
+                meta["ocr_pages"] = ocr_pages
+                meta["method"] = "hybrid (text+OCR)"
+            else:
+                meta["method"] = "pdf-text"
+            return text, meta
+        except Exception as e:  # noqa: BLE001 — fall back to plain markitdown
+            meta["ocr_error"] = f"{type(e).__name__}: {e}"
+
     base = ""
     try:
         base = (_md().convert(str(path)).markdown or "").strip()
@@ -249,7 +286,8 @@ def _convert_file(path: Path, ocr: str, lang: str, max_pages: int):
         meta["convert_error"] = f"{type(e).__name__}: {e}"
 
     text = base
-    if _ocr_needed(ext, len(base), ocr):
+    eff = "force" if (ocr == "hybrid" and ext in IMAGE_EXTS) else ("auto" if ocr == "hybrid" else ocr)
+    if _ocr_needed(ext, len(base), eff):
         if not _tesseract_ok():
             meta["ocr_status"] = "unavailable (install tesseract for image/scanned-PDF OCR)"
         else:
@@ -281,22 +319,24 @@ def _empty_reason(path: Path, meta: dict) -> str:
         return "image with no embedded text — install tesseract to OCR it"
     if path.suffix.lower() in IMAGE_EXTS:
         return "image — OCR found no readable text"
-    return "no extractable text (may be scanned; retry with ocr='force')"
+    return "no extractable text (may be scanned; retry with ocr='force' or 'hybrid')"
 
 
 # --------------------------------------------------------------------------- #
 # Gathering inputs + choosing output paths
 # --------------------------------------------------------------------------- #
 
-def _gather(sources, input_dir, recursive):
-    """Return ordered, de-duplicated [(file, base_dir|None)]; base_dir enables
-    structure-preserving output for directory scans."""
+def _gather(sources, input_dir, recursive, include_markdown=False):
+    """Ordered, de-duplicated [(file, base_dir|None)]. base_dir enables
+    structure-preserving output for directory scans. Markdown files are included
+    (for carry-through copy) only when include_markdown is True."""
+    gather_exts = GATHER_EXTS | (MARKDOWN_EXTS if include_markdown else set())
     items = []
     seen = set()
 
     def add(path: Path, base):
         rp = path.resolve()
-        if rp in seen or rp.suffix.lower() in SKIP_EXTS:
+        if rp in seen or rp.suffix.lower() not in gather_exts:
             return
         seen.add(rp)
         items.append((rp, base))
@@ -304,7 +344,7 @@ def _gather(sources, input_dir, recursive):
     def add_dir(d: Path):
         it = d.rglob("*") if recursive else d.glob("*")
         for f in sorted(it):
-            if f.is_file() and f.suffix.lower() in GATHER_EXTS:
+            if f.is_file() and f.suffix.lower() in gather_exts:
                 add(f, d)
 
     if sources:
@@ -323,7 +363,7 @@ def _gather(sources, input_dir, recursive):
 
 
 def _pick_target(path: Path, base, out_dir, preserve, used: set) -> Path:
-    """Choose a collision-free .md path. Same-stem different-type files become
+    """Collision-free .md path. Same-stem different-type files become
     `name.pdf.md` / `name.docx.md` rather than clobbering or opaque `-2`."""
     if out_dir is None:
         folder = path.parent
@@ -345,16 +385,21 @@ def _pick_target(path: Path, base, out_dir, preserve, used: set) -> Path:
     return cand
 
 
-def _write_index(out_dir: Path, converted: list) -> Path:
+def _write_index(out_dir: Path, entries: list) -> Path:
     lines = ["# Converted attachments — index", ""]
-    for c in sorted(converted, key=lambda r: r["markdown_file"]):
+    for c in sorted(entries, key=lambda r: r["markdown_file"]):
         mp = Path(c["markdown_file"])
         try:
             rel = mp.relative_to(out_dir)
         except ValueError:
             rel = mp
-        tag = " · OCR" if c.get("ocr") else ""
-        lines.append(f"- [{Path(c['source']).name}]({rel}) — {c['chars']} chars{tag}")
+        tags = []
+        if c.get("ocr"):
+            tags.append("OCR")
+        if c.get("method") == "copied-markdown":
+            tags.append("copied")
+        tag = (" · " + ", ".join(tags)) if tags else ""
+        lines.append(f"- [{Path(c['source']).name}]({rel}) — {c.get('chars', 0)} chars{tag}")
     idx = out_dir / "INDEX.md"
     idx.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return idx
@@ -376,32 +421,36 @@ def convert_attachments_to_markdown(
     ocr_max_pages: Optional[int] = None,
     preserve_structure: bool = True,
     write_index: bool = False,
+    include_existing_markdown: bool = True,
+    detail: str = "full",
 ) -> dict:
     """Convert attachments/files to Markdown FILES ON DISK without returning their content.
 
     Token-free: converted Markdown is written to `.md` files; only compact metadata
-    (paths, byte/char counts, status) is returned — never the document text. Use this
-    to pre-process Claude chat/project attachments so their content can be read
-    selectively later instead of being dumped into the conversation.
+    (paths, byte/char counts, status) is returned — never the document text.
 
     Args:
       sources: explicit file paths, directories, and/or glob patterns. Directories are
-               scanned for convertible files. If omitted, falls back to `input_dir`
-               (or the MARKITDOWN_INPUT_DIR env var).
+               scanned. If omitted, falls back to `input_dir` (or MARKITDOWN_INPUT_DIR).
       input_dir: directory to scan when `sources` is not provided.
       output_dir: where to write `.md` files. If omitted, uses MARKITDOWN_OUTPUT_DIR,
                   otherwise writes each `.md` next to its source file.
       recursive: recurse into sub-directories when scanning (default True).
-      overwrite: overwrite an existing `.md` target (default False -> such files are skipped).
-      ocr: "auto" (default; OCR images & image-only PDFs), "off", or "force" (OCR every
-           image/PDF). Requires Tesseract; degrades gracefully if missing.
+      overwrite: overwrite an existing `.md` target (default False -> skipped).
+      ocr: "auto" (default; OCR images & image-only PDFs), "off", "force" (OCR every
+           image/PDF), or "hybrid" (per-page: keep text pages, OCR only image pages —
+           best for mixed image-heavy PDFs). Requires Tesseract; degrades gracefully.
       ocr_lang: Tesseract language code(s), e.g. "eng" or "eng+ben".
-      ocr_max_pages: cap on PDF pages OCR'd per file (default 50; truncation is reported).
+      ocr_max_pages: cap on PDF pages OCR'd per file (default 50; truncation reported).
       preserve_structure: mirror source sub-folders under output_dir (default True).
-      write_index: also write an INDEX.md linking every converted file (output_dir only).
+      write_index: also write an INDEX.md linking every output file (output_dir only).
+      include_existing_markdown: copy existing .md/.markdown inputs into the output set
+           so a folder sweep yields a complete collection (default True).
+      detail: "full" (default; per-file arrays) or "summary" (omit the big `converted`
+           list to save tokens — totals + failures + a small sample; full list in INDEX.md).
 
-    Returns: {output_root, summary, totals, ocr_available, converted[], empty[],
-              skipped[], failed[], index_file?}
+    Returns: {output_root, summary, totals, ocr_available, converted[]?, markdown_copied[]?,
+              empty[], skipped[], failed[], index_file?}
     """
     out_dir = _expand(output_dir) if output_dir else _env_dir("MARKITDOWN_OUTPUT_DIR")
     mode = _ocr_mode(ocr)
@@ -410,12 +459,12 @@ def convert_attachments_to_markdown(
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    items = _gather(sources, input_dir, recursive)
-    converted, empty, skipped, failed = [], [], [], []
+    items = _gather(sources, input_dir, recursive, include_markdown=include_existing_markdown)
+    converted, md_copied, empty, skipped, failed = [], [], [], [], []
     used: set = set()
     ocr_count = pointers = total_chars = total_bytes = 0
 
-    if sources:  # surface explicitly-named sources that don't exist
+    if sources:
         for s in sources:
             if not _expand(s).exists() and not _glob_matches(s):
                 failed.append({"source": s, "error": "not found"})
@@ -423,6 +472,26 @@ def convert_attachments_to_markdown(
     for path, base in items:
         try:
             target = _pick_target(path, base, out_dir, preserve_structure, used)
+
+            # Carry existing markdown through (copy), don't re-convert.
+            if _is_markdown(path):
+                if out_dir is None or target.resolve() == path.resolve():
+                    md_copied.append({"source": str(path), "markdown_file": str(path),
+                                      "note": "already markdown (left in place)", "method": "copied-markdown"})
+                    continue
+                if target.exists() and not overwrite:
+                    skipped.append({"source": str(path), "reason": f"exists: {target.name}"})
+                    continue
+                used.add(target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                ch = len(target.read_text(encoding="utf-8", errors="replace"))
+                md_copied.append({"source": str(path), "markdown_file": str(target),
+                                  "bytes": target.stat().st_size, "chars": ch, "method": "copied-markdown"})
+                total_chars += ch
+                total_bytes += target.stat().st_size
+                continue
+
             if target.exists() and not overwrite:
                 skipped.append({"source": str(path),
                                 "reason": f"exists: {target.name} (set overwrite=true to replace)"})
@@ -439,6 +508,8 @@ def convert_attachments_to_markdown(
             if meta.get("ocr_used"):
                 rec["ocr"] = True
                 ocr_count += 1
+            if meta.get("ocr_pages"):
+                rec["ocr_pages"] = meta["ocr_pages"]
             if meta.get("pages"):
                 rec["pages"] = meta["pages"]
             if meta.get("ocr_truncated"):
@@ -451,23 +522,34 @@ def convert_attachments_to_markdown(
         except Exception as e:  # noqa: BLE001
             failed.append({"source": str(path), "error": f"{type(e).__name__}: {e}"})
 
+    totals = {
+        "converted": len(converted), "markdown_copied": len(md_copied), "ocr_used": ocr_count,
+        "drive_links": pointers, "empty": len(empty), "skipped": len(skipped),
+        "failed": len(failed), "total_chars": total_chars, "total_md_bytes": total_bytes,
+    }
     result = {
         "output_root": str(out_dir) if out_dir else "(beside each source file)",
         "summary": (f"{len(converted)} converted ({ocr_count} via OCR, {pointers} drive-links), "
-                    f"{len(empty)} empty, {len(skipped)} skipped, {len(failed)} failed"),
-        "totals": {
-            "converted": len(converted), "ocr_used": ocr_count, "drive_links": pointers,
-            "empty": len(empty), "skipped": len(skipped), "failed": len(failed),
-            "total_chars": total_chars, "total_md_bytes": total_bytes,
-        },
+                    f"{len(md_copied)} markdown copied, {len(empty)} empty, "
+                    f"{len(skipped)} skipped, {len(failed)} failed"),
+        "totals": totals,
         "ocr_available": _tesseract_ok(),
-        "converted": converted,
-        "empty": empty,
-        "skipped": skipped,
-        "failed": failed,
     }
-    if write_index and converted and out_dir is not None:
-        result["index_file"] = str(_write_index(out_dir, converted))
+    if write_index and (converted or md_copied) and out_dir is not None:
+        result["index_file"] = str(_write_index(out_dir, converted + md_copied))
+
+    # `empty`/`skipped`/`failed` are usually small and actionable — always include them.
+    result["empty"] = empty
+    result["skipped"] = skipped
+    result["failed"] = failed
+    if str(detail).lower() == "summary":
+        result["sample"] = [{"source": Path(c["source"]).name, "markdown_file": c["markdown_file"]}
+                            for c in (converted + md_copied)[:5]]
+        result["note"] = ("detail='summary': per-file lists omitted to save tokens; "
+                          "see index_file or call again with detail='full'.")
+    else:
+        result["converted"] = converted
+        result["markdown_copied"] = md_copied
     return result
 
 
@@ -475,8 +557,8 @@ def convert_attachments_to_markdown(
 def list_convertible_attachments(input_dir: Optional[str] = None, recursive: bool = True) -> dict:
     """List convertible files in a directory WITHOUT converting or reading them.
 
-    Returns paths/extensions/sizes only (token-free). Google Drive pointer stubs
-    (.gdoc/.gslides/.gsheet/.gdrive) are reported separately under `pointers`.
+    Returns paths/extensions/sizes only (token-free). Google Drive pointer stubs and
+    existing markdown files are reported separately (`pointers`, `markdown_count`).
     """
     d = _expand(input_dir) if input_dir else _env_dir("MARKITDOWN_INPUT_DIR")
     if not d:
@@ -484,18 +566,21 @@ def list_convertible_attachments(input_dir: Optional[str] = None, recursive: boo
     if not d.is_dir():
         return {"error": f"Not a directory: {d}", "files": []}
     it = d.rglob("*") if recursive else d.glob("*")
-    files, pointers, by_ext = [], [], {}
+    files, pointers, markdown, by_ext = [], [], [], {}
     for f in sorted(it):
         if not f.is_file():
             continue
         ext = f.suffix.lower()
         if ext in POINTER_EXTS:
             pointers.append({"path": str(f), "ext": ext})
+        elif ext in MARKDOWN_EXTS:
+            markdown.append({"path": str(f), "ext": ext})
         elif ext in CONVERTIBLE_EXTS:
             files.append({"path": str(f), "ext": ext, "bytes": f.stat().st_size})
             by_ext[ext] = by_ext.get(ext, 0) + 1
     return {"input_dir": str(d), "count": len(files), "by_ext": by_ext,
-            "pointer_count": len(pointers), "files": files, "pointers": pointers}
+            "pointer_count": len(pointers), "markdown_count": len(markdown),
+            "files": files, "pointers": pointers, "markdown": markdown}
 
 
 @mcp.tool()
@@ -509,9 +594,9 @@ def convert_one(
 ) -> dict:
     """Convert a single file to a Markdown FILE on disk; returns only metadata (token-free).
 
-    Supports OCR for images/scanned PDFs (see `ocr`). If a different `.md` already
-    exists at the default target, a type-qualified name (e.g. `name.pdf.md`) is used
-    to avoid clobbering it.
+    Supports OCR for images/scanned PDFs (`ocr`: auto/off/force/hybrid). If a different
+    `.md` already exists at the default target, a type-qualified name (e.g. `name.pdf.md`)
+    is used to avoid clobbering it.
     """
     src = _expand(source)
     if not src.is_file():
@@ -533,12 +618,9 @@ def convert_one(
         target.write_text(text, encoding="utf-8")
         out = {"ok": True, "source": str(src), "markdown_file": str(target),
                "bytes": target.stat().st_size, "chars": len(text), "method": meta["method"]}
-        if meta.get("ocr_used"):
-            out["ocr"] = True
-        if meta.get("pages"):
-            out["pages"] = meta["pages"]
-        if meta.get("ocr_truncated"):
-            out["ocr_truncated"] = True
+        for k in ("ocr_used", "ocr_pages", "pages", "ocr_truncated"):
+            if meta.get(k):
+                out["ocr" if k == "ocr_used" else k] = meta[k]
         return out
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "source": str(src), "error": f"{type(e).__name__}: {e}"}
@@ -561,14 +643,15 @@ def peek_markdown(markdown_file: str, max_chars: int = 400) -> dict:
 
 @mcp.tool()
 def ocr_capabilities() -> dict:
-    """Report whether OCR is available (Tesseract path, version, installed languages)."""
+    """Report whether Tesseract OCR is available (path, version, installed languages)."""
     info = {"available": _tesseract_ok(), "tesseract_cmd": _tess_cmd()}
     if info["available"]:
         try:
-            v = subprocess.run([_tess_cmd(), "--version"], capture_output=True)
-            info["version"] = v.stdout.decode("utf-8", "replace").splitlines()[0]
-            langs = subprocess.run([_tess_cmd(), "--list-langs"], capture_output=True)
-            info["languages"] = [l for l in langs.stdout.decode("utf-8", "replace").splitlines()[1:] if l.strip()]
+            info["version"] = subprocess.run([_tess_cmd(), "--version"], capture_output=True
+                                              ).stdout.decode("utf-8", "replace").splitlines()[0]
+            langs = subprocess.run([_tess_cmd(), "--list-langs"], capture_output=True
+                                   ).stdout.decode("utf-8", "replace").splitlines()[1:]
+            info["languages"] = [l for l in langs if l.strip()]
         except Exception as e:  # noqa: BLE001
             info["note"] = f"{type(e).__name__}: {e}"
     else:
@@ -586,30 +669,32 @@ def _selftest() -> int:
     d = Path(tempfile.mkdtemp(prefix="mkid_selftest_"))
     (d / "a.csv").write_text("name,role\nAda,Engineer\nGrace,Admiral\n")
     (d / "b.html").write_text("<h1>ZZSENTINELZZ heading</h1><p>secret body text</p>")
-    (d / "notes.md").write_text("# already markdown\n")  # must be skipped
-    (d / "ptr.gdoc").write_text('{"doc_id":"ABC123","email":"x@y.com"}')  # pointer
+    (d / "existing.md").write_text("# pre-existing note\n\nCarry me through.\n")
+    (d / "ptr.gdoc").write_text('{"doc_id":"ABC123","email":"x@y.com"}')
 
-    res = convert_attachments_to_markdown(input_dir=str(d), output_dir=str(d / "out"))
-    print(json.dumps(res, indent=2))
+    res = convert_attachments_to_markdown(input_dir=str(d), output_dir=str(d / "out"), write_index=True)
+    print(json.dumps(res["totals"], indent=2))
 
     blob = json.dumps(res)
-    converted = len(res["converted"]) == 3  # csv, html, gdoc(link)
+    conv_ok = res["totals"]["converted"] == 3            # csv, html, gdoc(link)
+    md_ok = res["totals"]["markdown_copied"] == 1        # existing.md carried through
     no_leak = "ZZSENTINELZZ" not in blob and "secret body text" not in blob
     no_pii = "x@y.com" not in blob and "x@y.com" not in (d / "out" / "ptr.md").read_text()
     on_disk = any("ZZSENTINELZZ" in f.read_text() for f in (d / "out").glob("*.md"))
-    has_link = "docs.google.com/document/d/ABC123" in (d / "out" / "ptr.md").read_text()
+    link_ok = "docs.google.com/document/d/ABC123" in (d / "out" / "ptr.md").read_text()
+    copied_ok = (d / "out" / "existing.md").exists() and "Carry me through" in (d / "out" / "existing.md").read_text()
 
-    ok = converted and no_leak and no_pii and on_disk and has_link
-    print(f"SELFTEST: converted3={converted} no_leak={no_leak} no_pii={no_pii} "
-          f"on_disk={on_disk} drive_link={has_link} -> {'PASS' if ok else 'FAIL'}")
-    print("OCR available:", _tesseract_ok(), "->", _tess_cmd())
+    ok = conv_ok and md_ok and no_leak and no_pii and on_disk and link_ok and copied_ok
+    print(f"SELFTEST: conv3={conv_ok} md_copied={md_ok} no_leak={no_leak} no_pii={no_pii} "
+          f"on_disk={on_disk} link={link_ok} copied={copied_ok} -> {'PASS' if ok else 'FAIL'}")
+    print("OCR:", _tesseract_ok(), "->", _tess_cmd())
     return 0 if ok else 1
 
 
 def main() -> None:
     if "--selftest" in sys.argv:
         raise SystemExit(_selftest())
-    mcp.run()  # STDIO transport
+    mcp.run()
 
 
 if __name__ == "__main__":
