@@ -41,9 +41,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -274,17 +276,113 @@ def _office_ocr(path: Path, lang: str, max_images: int, min_bytes: int = 5000):
 # Local vision model (Ollama) — open-source, local, token-free
 # --------------------------------------------------------------------------- #
 
-_OLLAMA_OK = None
+# --- Ollama lifecycle: start on demand, stop after idle (resource-friendly) ----
+_OLLAMA_IDLE_SECS = int(os.getenv("OLLAMA_IDLE_TIMEOUT", "300") or "300")
+_STATE_DIR = Path(os.path.expanduser("~/.markitdown-attachments"))
+_ACTIVITY_FILE = _STATE_DIR / "ollama_last_use"
+_OLLAMA_PROC = None            # the `ollama serve` WE started (main process only)
+_WATCHDOG_ON = False
+_OLLA_LOCK = threading.Lock()
+
+
+def _ollama_up(timeout: float = 2.0) -> bool:
+    try:
+        import requests
+        return requests.get(_ollama_host() + "/api/version", timeout=timeout).status_code == 200
+    except Exception:
+        return False
+
 
 def _ollama_available() -> bool:
-    global _OLLAMA_OK
-    if _OLLAMA_OK is None:
+    return _ollama_up()
+
+
+def _touch_ollama_activity() -> None:
+    """Record 'just used' — written by the main process and by pool workers, so the
+    idle watchdog (main process) tracks activity across process boundaries."""
+    try:
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        _ACTIVITY_FILE.write_text(str(time.time()))
+    except Exception:
+        pass
+
+
+def _ollama_idle_secs() -> float:
+    try:
+        return time.time() - _ACTIVITY_FILE.stat().st_mtime
+    except Exception:
+        return float("inf")
+
+
+def _ollama_bin() -> str:
+    return (shutil.which("ollama")
+            or next((p for p in ("/opt/homebrew/bin/ollama", "/usr/local/bin/ollama")
+                     if os.path.exists(p)), "ollama"))
+
+
+def _stop_ollama() -> None:
+    """Stop the `ollama serve` WE started — never one the user/brew is running."""
+    global _OLLAMA_PROC
+    with _OLLA_LOCK:
+        proc, _OLLAMA_PROC = _OLLAMA_PROC, None
+    if proc is None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:
         try:
-            import requests
-            _OLLAMA_OK = requests.get(_ollama_host() + "/api/version", timeout=2).status_code == 200
+            proc.terminate()
         except Exception:
-            _OLLAMA_OK = False
-    return _OLLAMA_OK
+            pass
+
+
+def _start_watchdog() -> None:
+    global _WATCHDOG_ON
+    with _OLLA_LOCK:
+        if _WATCHDOG_ON:
+            return
+        _WATCHDOG_ON = True
+
+    def loop():
+        interval = min(30, max(5, _OLLAMA_IDLE_SECS // 4))
+        while True:
+            time.sleep(interval)
+            try:
+                if _OLLAMA_PROC is not None and _ollama_idle_secs() > _OLLAMA_IDLE_SECS:
+                    _stop_ollama()
+            except Exception:
+                pass
+
+    threading.Thread(target=loop, name="ollama-idle-watchdog", daemon=True).start()
+
+
+def _ensure_ollama(timeout: float = 25.0) -> bool:
+    """Start Ollama on demand (call from the MAIN process only) and arm the idle
+    watchdog. Reuses an already-running instance; never stops one we didn't start.
+    Returns True if the API is reachable."""
+    _touch_ollama_activity()
+    if _ollama_up():
+        _start_watchdog()
+        return True
+    global _OLLAMA_PROC
+    try:
+        env = dict(os.environ)
+        env.setdefault("OLLAMA_KEEP_ALIVE", "5m")   # model unloads even if the daemon lingers
+        proc = subprocess.Popen([_ollama_bin(), "serve"], env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        with _OLLA_LOCK:
+            _OLLAMA_PROC = proc
+    except Exception:
+        return False
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _ollama_up(timeout=1.0):
+            _touch_ollama_activity()
+            _start_watchdog()
+            return True
+        time.sleep(0.5)
+    return _ollama_up()
 
 
 def _vision_caption(path: Path, model: str, host: str, timeout: int = 180) -> str:
@@ -430,6 +528,7 @@ def _convert_file(path: Path, ocr: str, lang: str, max_pages: int,
     if ext in IMAGE_EXTS and vision != "off":
         want = (vision == "force") or (vision == "auto" and not text.strip())
         if want and _ollama_available():
+            _touch_ollama_activity()
             try:
                 cap = _vision_caption(path, vmodel, _ollama_host())
                 if cap:
@@ -628,6 +727,10 @@ def convert_attachments_to_markdown(
 
     items = _gather(sources, input_dir, recursive, include_markdown=include_existing_markdown)
 
+    # Start the local vision model on demand — only if vision is on AND images are present.
+    if vmode != "off" and any(p.suffix.lower() in IMAGE_EXTS for p, _ in items):
+        _ensure_ollama()
+
     converted, md_copied, empty, skipped, failed = [], [], [], [], []
     if sources:
         for s in sources:
@@ -785,8 +888,11 @@ def convert_one(
             target = src.with_suffix(".md")
             if target.exists() and not overwrite:
                 target = src.with_name(src.stem + src.suffix + ".md")
+        vmode = _vision_mode(vision)
+        if vmode != "off" and src.suffix.lower() in IMAGE_EXTS:
+            _ensure_ollama()
         text, meta = _convert_file(src, _ocr_mode(ocr), _ocr_lang(ocr_lang), _ocr_max_pages(ocr_max_pages),
-                                   _vision_mode(vision), _vision_model(vision_model))
+                                   vmode, _vision_model(vision_model))
         if not text.strip():
             err = meta.get("convert_error") or meta.get("ocr_error") or meta.get("vision_error")
             if err:
@@ -834,7 +940,11 @@ def ocr_capabilities() -> dict:
             info["ocr"]["note"] = f"{type(e).__name__}: {e}"
     else:
         info["ocr"]["hint"] = "macOS: brew install tesseract (+ tesseract-lang for more languages)."
-    vis = {"available": _ollama_available(), "host": _ollama_host(), "default_model": _vision_model(None)}
+    vis = {"available": _ollama_available(), "host": _ollama_host(), "default_model": _vision_model(None),
+           "lifecycle": "on-demand start + idle auto-stop",
+           "idle_timeout_secs": _OLLAMA_IDLE_SECS,
+           "managed_by_server": _OLLAMA_PROC is not None,
+           "idle_secs": round(_ollama_idle_secs(), 1) if _ACTIVITY_FILE.exists() else None}
     if vis["available"]:
         vis["models_installed"] = _ollama_models()
     else:

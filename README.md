@@ -37,6 +37,9 @@ Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
   diagrams) are **described** by a local model (default `moondream`). Runs entirely
   locally and the description is written to disk — **no cloud, no API keys, no tokens.**
   `vision`: `auto` (default), `off`, `force`; no-ops gracefully if Ollama isn't installed.
+  The model server is **started on demand** when a conversion needs it and
+  **auto-stopped after 5 min idle** (`OLLAMA_IDLE_TIMEOUT`), so nothing runs in the
+  background between jobs — and it only ever stops an instance it started itself.
 - **OCR** (Tesseract) for images and scanned/image-only PDFs, with automatic
   page-orientation detection (sideways scans are read correctly). The `ocr`
   argument: `auto` (default), `off`, `force`, or **`hybrid`** — per-page, keeping
