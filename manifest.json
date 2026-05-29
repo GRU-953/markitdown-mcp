@@ -7,7 +7,7 @@
   "long_description": "Wraps Microsoft's MarkItDown library as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). This lets Claude pre-process a whole folder of attachments for effectively zero context tokens, then read individual Markdown files only when their content is actually needed.\n\nTools: `convert_attachments_to_markdown` (batch convert files/dirs/globs), `list_convertible_attachments` (enumerate, no content), `convert_one` (single file), and `peek_markdown` (opt-in, small capped preview).",
   "author": {
     "name": "Aninda",
-    "url": "https://github.com/aninda"
+    "url": "https://github.com/GRU-953"
   },
   "icon": "icon.png",
   "server": {
@@ -76,10 +76,10 @@
     "token-free"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/aninda/markitdown-attachments-mcp",
+  "homepage": "https://github.com/GRU-953/markitdown-mcp",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aninda/markitdown-attachments-mcp"
+    "url": "https://github.com/GRU-953/markitdown-mcp"
   },
   "compatibility": {
     "platforms": [
