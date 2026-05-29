@@ -40,6 +40,10 @@ Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
   The model server is **started on demand** when a conversion needs it and
   **auto-stopped after 5 min idle** (`OLLAMA_IDLE_TIMEOUT`), so nothing runs in the
   background between jobs — and it only ever stops an instance it started itself.
+- **Local speech-to-text** — audio (`.wav/.mp3/.m4a/.flac`) is transcribed **on-device**
+  with open-source **Whisper** (faster-whisper), replacing markitdown's cloud Google
+  transcription. `transcribe`: `auto` (default) / `off`; `whisper_model` (default
+  `base`). Transcript written to disk — local, offline, token-free.
 - **OCR** (Tesseract) for images and scanned/image-only PDFs, with automatic
   page-orientation detection (sideways scans are read correctly). The `ocr`
   argument: `auto` (default), `off`, `force`, or **`hybrid`** — per-page, keeping

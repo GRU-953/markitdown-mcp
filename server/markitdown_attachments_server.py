@@ -70,6 +70,7 @@ CONVERTIBLE_EXTS = {
     ".wav", ".mp3", ".m4a", ".flac",
 }
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
+AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".flac"}
 POINTER_EXTS = {".gdoc", ".gslides", ".gsheet", ".gdrive"}
 MARKDOWN_EXTS = {".md", ".markdown"}
 OFFICE_ZIP_EXTS = {".docx", ".pptx", ".xlsx", ".xlsm"}
@@ -137,6 +138,15 @@ def _vision_mode(v: Optional[str]) -> str:
 
 def _vision_model(v: Optional[str]) -> str:
     return (v or os.getenv("MARKITDOWN_VISION_MODEL") or "moondream").strip()
+
+
+def _transcribe_mode(v: Optional[str]) -> str:
+    v = (v or os.getenv("MARKITDOWN_TRANSCRIBE") or "auto").strip().lower()
+    return v if v in ("auto", "off", "force") else "auto"
+
+
+def _whisper_model(v: Optional[str]) -> str:
+    return (v or os.getenv("MARKITDOWN_WHISPER_MODEL") or "base").strip()
 
 
 def _ollama_host() -> str:
@@ -416,6 +426,37 @@ def _ollama_models() -> list:
         return []
 
 
+# --- Local speech-to-text (faster-whisper) — open-source, local, offline -------
+_WHISPER = None
+_WHISPER_LOCK = threading.Lock()
+
+
+def _whisper_available() -> bool:
+    try:
+        import faster_whisper  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _whisper(model_name: str):
+    """Lazy-load and cache a local Whisper model (CPU int8 — fast, no GPU/torch)."""
+    global _WHISPER
+    if _WHISPER is None or _WHISPER[0] != model_name:
+        with _WHISPER_LOCK:
+            if _WHISPER is None or _WHISPER[0] != model_name:
+                from faster_whisper import WhisperModel
+                _WHISPER = (model_name, WhisperModel(model_name, device="cpu", compute_type="int8"))
+    return _WHISPER[1]
+
+
+def _transcribe_audio(path: Path, model_name: str):
+    model = _whisper(model_name)
+    segments, info = model.transcribe(str(path), beam_size=1)
+    text = " ".join(s.text.strip() for s in segments).strip()
+    return text, getattr(info, "duration", None), getattr(info, "language", None)
+
+
 # --------------------------------------------------------------------------- #
 # Google Drive pointer stubs
 # --------------------------------------------------------------------------- #
@@ -456,7 +497,8 @@ def _ocr_needed(ext: str, base_len: int, mode: str) -> bool:
 
 
 def _convert_file(path: Path, ocr: str, lang: str, max_pages: int,
-                  vision: str = "off", vmodel: str = "moondream"):
+                  vision: str = "off", vmodel: str = "moondream",
+                  transcribe: str = "auto", whisper_model: str = "base"):
     """Convert one file to markdown text. Returns (text, meta)."""
     ext = path.suffix.lower()
     meta = {"method": "markitdown", "ocr_used": False, "is_image": ext in IMAGE_EXTS,
@@ -465,6 +507,28 @@ def _convert_file(path: Path, ocr: str, lang: str, max_pages: int,
     if _is_pointer(path):
         meta["method"] = "drive-link"
         return _pointer_markdown(path), meta
+
+    # Audio: transcribe LOCALLY with Whisper — never markitdown's cloud Google path.
+    if ext in AUDIO_EXTS:
+        if transcribe != "off" and _whisper_available():
+            try:
+                tr, dur, langd = _transcribe_audio(path, whisper_model)
+                hdr = f"_(Audio transcript — local Whisper `{whisper_model}`"
+                if dur:
+                    hdr += f", {dur:.0f}s"
+                if langd:
+                    hdr += f", {langd}"
+                hdr += ")_"
+                meta["method"] = "whisper"
+                meta["transcribed"] = True
+                return f"{hdr}\n\n{tr if tr else '_(No speech detected.)_'}\n", meta
+            except Exception as e:  # noqa: BLE001
+                meta["convert_error"] = f"whisper: {type(e).__name__}: {e}"
+                return "", meta
+        meta["method"] = "audio (no transcription)"
+        note = ("local transcription disabled" if transcribe == "off"
+                else "install faster-whisper for local transcription")
+        return f"_(Audio file — {note}.)_\n", meta
 
     if ocr == "hybrid" and ext == ".pdf":
         try:
@@ -631,7 +695,7 @@ def _write_index(out_dir: Path, entries: list) -> Path:
 
 
 def _do_item(path: Path, target: Path, is_md: bool, mode: str, lang: str, maxp: int,
-             vision: str, vmodel: str):
+             vision: str, vmodel: str, transcribe: str = "auto", wmodel: str = "base"):
     """Worker: convert/copy ONE pre-targeted item. Returns (category, record).
     Writes content to disk; returns only metadata (token-free, thread-safe)."""
     try:
@@ -641,7 +705,7 @@ def _do_item(path: Path, target: Path, is_md: bool, mode: str, lang: str, maxp: 
             ch = len(target.read_text(encoding="utf-8", errors="replace"))
             return ("copied", {"source": str(path), "markdown_file": str(target),
                                "bytes": target.stat().st_size, "chars": ch, "method": "copied-markdown"})
-        text, meta = _convert_file(path, mode, lang, maxp, vision, vmodel)
+        text, meta = _convert_file(path, mode, lang, maxp, vision, vmodel, transcribe, wmodel)
         if not text.strip():
             err = meta.get("convert_error") or meta.get("ocr_error") or meta.get("vision_error")
             if err:
@@ -682,6 +746,8 @@ def convert_attachments_to_markdown(
     ocr_max_pages: Optional[int] = None,
     vision: Optional[str] = None,
     vision_model: Optional[str] = None,
+    transcribe: Optional[str] = None,
+    whisper_model: Optional[str] = None,
     workers: Optional[int] = None,
     preserve_structure: bool = True,
     write_index: bool = False,
@@ -721,6 +787,7 @@ def convert_attachments_to_markdown(
     out_dir = _expand(output_dir) if output_dir else _env_dir("MARKITDOWN_OUTPUT_DIR")
     mode, lang, maxp = _ocr_mode(ocr), _ocr_lang(ocr_lang), _ocr_max_pages(ocr_max_pages)
     vmode, vmodel = _vision_mode(vision), _vision_model(vision_model)
+    tmode, wmodel = _transcribe_mode(transcribe), _whisper_model(whisper_model)
     nworkers = _workers(workers)
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -730,6 +797,12 @@ def convert_attachments_to_markdown(
     # Start the local vision model on demand — only if vision is on AND images are present.
     if vmode != "off" and any(p.suffix.lower() in IMAGE_EXTS for p, _ in items):
         _ensure_ollama()
+    # Pre-load Whisper once (avoids a model-download race across pool workers).
+    if tmode != "off" and _whisper_available() and any(p.suffix.lower() in AUDIO_EXTS for p, _ in items):
+        try:
+            _whisper(wmodel)
+        except Exception:
+            pass
 
     converted, md_copied, empty, skipped, failed = [], [], [], [], []
     if sources:
@@ -767,7 +840,7 @@ def convert_attachments_to_markdown(
     # Falls back to a thread pool, then sequential, if a process pool can't start.
     results = None
     if nworkers > 1 and len(work) >= 4:
-        args = [(p, t, is_md, mode, lang, maxp, vmode, vmodel) for (p, t, is_md) in work]
+        args = [(p, t, is_md, mode, lang, maxp, vmode, vmodel, tmode, wmodel) for (p, t, is_md) in work]
         for Pool in (ProcessPoolExecutor, ThreadPoolExecutor):
             try:
                 with Pool(max_workers=nworkers) as ex:
@@ -776,7 +849,7 @@ def convert_attachments_to_markdown(
             except Exception:  # noqa: BLE001
                 results = None
     if results is None:
-        results = [_do_item(p, t, is_md, mode, lang, maxp, vmode, vmodel) for (p, t, is_md) in work]
+        results = [_do_item(p, t, is_md, mode, lang, maxp, vmode, vmodel, tmode, wmodel) for (p, t, is_md) in work]
 
     ocr_count = pointers = vision_count = total_chars = total_bytes = 0
     for cat, rec in results:
@@ -871,6 +944,8 @@ def convert_one(
     ocr_max_pages: Optional[int] = None,
     vision: Optional[str] = None,
     vision_model: Optional[str] = None,
+    transcribe: Optional[str] = None,
+    whisper_model: Optional[str] = None,
 ) -> dict:
     """Convert a single file to a Markdown FILE on disk; returns only metadata (token-free).
 
@@ -892,7 +967,8 @@ def convert_one(
         if vmode != "off" and src.suffix.lower() in IMAGE_EXTS:
             _ensure_ollama()
         text, meta = _convert_file(src, _ocr_mode(ocr), _ocr_lang(ocr_lang), _ocr_max_pages(ocr_max_pages),
-                                   vmode, _vision_model(vision_model))
+                                   vmode, _vision_model(vision_model),
+                                   _transcribe_mode(transcribe), _whisper_model(whisper_model))
         if not text.strip():
             err = meta.get("convert_error") or meta.get("ocr_error") or meta.get("vision_error")
             if err:
@@ -950,6 +1026,8 @@ def ocr_capabilities() -> dict:
     else:
         vis["hint"] = "Install Ollama (brew install ollama; brew services start ollama) and pull a vision model (ollama pull moondream)."
     info["vision"] = vis
+    info["transcription"] = {"available": _whisper_available(), "engine": "faster-whisper (local)",
+                             "default_model": _whisper_model(None)}
     info["workers_default"] = _workers(None)
     return info
 
