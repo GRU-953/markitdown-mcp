@@ -34,9 +34,11 @@ import glob as _glob
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +64,7 @@ CONVERTIBLE_EXTS = {
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
 POINTER_EXTS = {".gdoc", ".gslides", ".gsheet", ".gdrive"}
 MARKDOWN_EXTS = {".md", ".markdown"}   # carried through (copied), not re-converted
+OFFICE_ZIP_EXTS = {".docx", ".pptx", ".xlsx", ".xlsm"}  # zip-based Office (embed media/ images)
 GATHER_EXTS = CONVERTIBLE_EXTS | POINTER_EXTS
 
 OCR_DPI = 200                 # rasterization DPI for scanned-PDF OCR
@@ -214,6 +217,32 @@ def _hybrid_pdf(path: Path, lang: str, max_pages: int):
         pdf.close()
 
 
+_OFFICE_MEDIA_RE = re.compile(r"(?:word|ppt|xl)/media/", re.I)
+_OFFICE_IMG_SUFFIX = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp")
+
+
+def _office_ocr(path: Path, lang: str, max_images: int, min_bytes: int = 5000):
+    """OCR raster images embedded inside a zip-based Office file (docx/pptx/xlsx).
+    Skips tiny (decorative) images and OCR noise. Returns
+    (text, total_images, images_with_text, truncated)."""
+    from PIL import Image
+    with zipfile.ZipFile(str(path)) as z:
+        names = sorted(n for n in z.namelist()
+                       if _OFFICE_MEDIA_RE.search(n)
+                       and n.lower().endswith(_OFFICE_IMG_SUFFIX)
+                       and z.getinfo(n).file_size >= min_bytes)
+        parts, nwith = [], 0
+        for n in names[:max_images]:
+            try:
+                t = _ocr_pil(Image.open(io.BytesIO(z.read(n))), lang).strip()
+            except Exception:  # noqa: BLE001
+                t = ""
+            if sum(c.isalnum() for c in t) >= 12:    # skip decorative images / OCR noise
+                nwith += 1
+                parts.append(f"### {n.split('/')[-1]}\n\n{t}")
+        return "\n\n".join(parts), len(names), nwith, len(names) > max_images
+
+
 # --------------------------------------------------------------------------- #
 # Google Drive pointer stubs
 # --------------------------------------------------------------------------- #
@@ -307,6 +336,20 @@ def _convert_file(path: Path, ocr: str, lang: str, max_pages: int):
                     meta["ocr_used"] = True
             except Exception as e:  # noqa: BLE001
                 meta["ocr_error"] = f"{type(e).__name__}: {e}"
+
+    # Embedded-image OCR for Office documents (opt-in via ocr="force"/"hybrid").
+    if ocr in ("force", "hybrid") and ext in OFFICE_ZIP_EXTS and _tesseract_ok():
+        try:
+            emb, _total, n_with, trunc = _office_ocr(path, lang, max_pages)
+            if emb.strip():
+                text = (text + "\n\n" if text.strip() else "") + "## Embedded images (OCR)\n\n" + emb
+                meta["ocr_used"] = True
+                meta["embedded_images_ocr"] = n_with
+                meta["method"] = meta["method"] + "+img-ocr"
+                if trunc:
+                    meta["ocr_truncated"] = True
+        except Exception as e:  # noqa: BLE001
+            meta.setdefault("ocr_error", f"embedded-image OCR: {type(e).__name__}: {e}")
     return text, meta
 
 
@@ -515,6 +558,8 @@ def convert_attachments_to_markdown(
                 ocr_count += 1
             if meta.get("ocr_pages"):
                 rec["ocr_pages"] = meta["ocr_pages"]
+            if meta.get("embedded_images_ocr"):
+                rec["embedded_images_ocr"] = meta["embedded_images_ocr"]
             if meta.get("pages"):
                 rec["pages"] = meta["pages"]
             if meta.get("ocr_truncated"):
@@ -626,7 +671,7 @@ def convert_one(
         target.write_text(text, encoding="utf-8")
         out = {"ok": True, "source": str(src), "markdown_file": str(target),
                "bytes": target.stat().st_size, "chars": len(text), "method": meta["method"]}
-        for k in ("ocr_used", "ocr_pages", "pages", "ocr_truncated"):
+        for k in ("ocr_used", "ocr_pages", "pages", "ocr_truncated", "embedded_images_ocr"):
             if meta.get(k):
                 out["ocr" if k == "ocr_used" else k] = meta[k]
         return out

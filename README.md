@@ -33,7 +33,9 @@ Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
   page-orientation detection (sideways scans are read correctly). The `ocr`
   argument: `auto` (default), `off`, `force`, or **`hybrid`** — per-page, keeping
   text pages and OCR-ing only the image pages of mixed PDFs (e.g. a 25 MB report
-  went from 5.5 K → 8.6 K chars by recovering its chart/infographic pages).
+  went from 5.5 K → 8.6 K chars by recovering its chart/infographic pages). With
+  `force`/`hybrid`, images **embedded inside** Word/PowerPoint/Excel files are
+  OCR'd too (e.g. a slide deck gained **+7.9 K chars** from its 44 image-slides).
 - **Existing markdown carried through** — `.md`/`.markdown` files in the input are
   copied into the output set (structure-preserved) so a folder sweep yields a
   *complete* collection, not a partial one. (`include_existing_markdown`, default on.)
