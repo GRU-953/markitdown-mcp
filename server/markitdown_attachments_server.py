@@ -47,6 +47,13 @@ from typing import Optional
 from markitdown import MarkItDown
 from mcp.server.fastmcp import FastMCP
 
+# Ensure Homebrew/local bin dirs are on PATH so spawned helpers resolve (ffmpeg
+# for audio; tesseract is also found via absolute path) even when the host app
+# launches this server with a sparse PATH.
+for _d in ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"):
+    if os.path.isdir(_d) and _d not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
+
 mcp = FastMCP("markitdown-attachments")
 
 # File types markitdown can meaningfully convert (used when scanning directories).
