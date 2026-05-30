@@ -622,6 +622,8 @@ def _convert_file(path: Path, ocr: str, lang: str, max_pages: int,
     base = ""
     try:
         base = (_md().convert(str(path)).markdown or "").strip()
+        if ext in (".xlsx", ".xls", ".xlsm"):
+            base = re.sub(r"Unnamed: \d+", "", base)   # drop pandas blank-header placeholders
     except Exception as e:  # noqa: BLE001
         meta["convert_error"] = f"{type(e).__name__}: {e}"
 

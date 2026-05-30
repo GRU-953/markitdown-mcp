@@ -5,6 +5,13 @@ converts Claude chat/project attachments to Markdown **locally**, writing `.md`
 files to disk and returning only metadata. Built on
 [microsoft/markitdown](https://github.com/microsoft/markitdown).
 
+## v2.6.2
+- **XLSX header cleanup** — pandas' `Unnamed: N` placeholders for blank-header
+  columns (e.g. when a title row is mis-detected as the header) are now stripped
+  from spreadsheet output. A comprehensive fidelity audit (XLSX/DOCX/PPTX vs.
+  openpyxl/python-docx/python-pptx ground truth) otherwise confirmed faithful
+  conversion across all formats — no data loss, all sheets/slides/tables present.
+
 ## v2.6.1
 - **Fixed RTF** — `.rtf` files previously passed raw `\rtf` control codes through as
   fake "content"; they're now extracted to plain text locally via `striprtf`.
