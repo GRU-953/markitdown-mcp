@@ -25,6 +25,11 @@ echo "Using $PY ($($PY --version 2>&1))"
 "$HERE/.venv/bin/python" -m pip install --upgrade pip wheel >/dev/null
 "$HERE/.venv/bin/python" -m pip install -r "$HERE/requirements.txt"
 
+# Pull the very latest markitdown straight from upstream (best-effort; the server
+# also auto-updates it in the background once a day).
+"$HERE/.venv/bin/python" -m pip install -q --upgrade \
+  "markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription] @ git+https://github.com/microsoft/markitdown.git#subdirectory=packages/markitdown" || true
+
 echo
 echo "✓ Installed. Virtualenv: $HERE/.venv"
 echo "  Server entry:        $HERE/server/markitdown_attachments_server.py"

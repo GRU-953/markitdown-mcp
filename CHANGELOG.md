@@ -5,6 +5,17 @@ converts Claude chat/project attachments to Markdown **locally**, writing `.md`
 files to disk and returning only metadata. Built on
 [microsoft/markitdown](https://github.com/microsoft/markitdown).
 
+## v2.7.0
+- **Apple M-series optimization** — parallel conversion is sized to the *performance*
+  cores with each worker's native libraries pinned to a single thread (on M4: 6 workers
+  match 10-worker throughput at ~600 MB less memory; 3.3× faster than sequential);
+  **Whisper transcription runs on the Apple GPU via MLX** (`mlx-whisper`, with a
+  `faster-whisper` CPU fallback); worker count is capped against unified memory.
+- **Auto-updating engine** — the underlying MarkItDown is kept current from upstream
+  (microsoft/markitdown) automatically in the background (checked once/day, applied on
+  next launch; opt out with `MARKITDOWN_AUTO_UPDATE=off`); `install.sh` also pulls latest.
+- `ocr_capabilities` now reports hardware tuning, engine selection, and auto-update state.
+
 ## v2.6.2
 - **XLSX header cleanup** — pandas' `Unnamed: N` placeholders for blank-header
   columns (e.g. when a title row is mis-detected as the header) are now stripped

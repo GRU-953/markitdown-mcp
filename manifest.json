@@ -2,11 +2,11 @@
   "manifest_version": "0.3",
   "name": "markitdown-attachments",
   "display_name": "MarkItDown Attachments (token-free + OCR)",
-  "version": "2.6.2",
+  "version": "2.7.0",
   "description": "Convert Claude chat & project attachments to Markdown files locally — with OCR — without spending context tokens on the file contents.",
-  "long_description": "Wraps Microsoft's MarkItDown as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). Converting a whole folder of attachments costs effectively zero context tokens.\n\nFeatures: parallel batch conversion across a process pool (true multi-core, ~4x on a 10-core Mac); a local open-source vision model via Ollama that describes images OCR can't read (runs entirely locally, written to disk — no cloud, no API keys, no tokens; the model server is started on demand and auto-stopped after idle to free resources); local open-source speech-to-text (Whisper via faster-whisper) transcribes audio entirely on-device, replacing markitdown's cloud transcription; digital-PDF tables are reconstructed as clean markdown tables via pdfplumber; OCR (Tesseract) for images and scanned/image-only PDFs with automatic orientation detection, including a 'hybrid' mode that keeps text pages and OCRs only the image pages of mixed PDFs; existing .md/.markdown files are carried through into the output so a folder sweep yields a complete collection; Google Drive pointer files (.gdoc/.gslides/.gsheet/.gdrive) become clickable 'Open in Drive' link notes (no raw JSON / no embedded email); collision-safe output names (name.pdf.md / name.docx.md); structure-preserving output; a 'detail=summary' option to shrink the tool result on very large sweeps (full manifest still written to INDEX.md); and a rich, still-token-free summary.\n\nTools: convert_attachments_to_markdown, list_convertible_attachments, convert_one, peek_markdown, ocr_capabilities.",
+  "long_description": "Wraps Microsoft's MarkItDown as an MCP server, but unlike the stock `markitdown-mcp` it never returns converted text into the conversation. Each attachment (PDF, Word, Excel, PowerPoint, images, HTML, CSV, JSON, XML, ZIP, EPub, Outlook .msg, audio, and more) is converted entirely on your machine and written to a `.md` file on disk; the tools return only compact metadata (output paths, byte/character counts, status). Converting a whole folder of attachments costs effectively zero context tokens.\n\nFeatures: parallel batch conversion across a process pool (true multi-core, ~4x on a 10-core Mac); a local open-source vision model via Ollama that describes images OCR can't read (runs entirely locally, written to disk — no cloud, no API keys, no tokens; the model server is started on demand and auto-stopped after idle to free resources); local open-source speech-to-text (Whisper via faster-whisper) transcribes audio entirely on-device, replacing markitdown's cloud transcription; digital-PDF tables are reconstructed as clean markdown tables via pdfplumber; tuned for Apple M-series silicon (performance-core parallelism, GPU-accelerated Whisper via MLX, unified-memory-aware concurrency) with the underlying MarkItDown engine auto-updating from upstream; OCR (Tesseract) for images and scanned/image-only PDFs with automatic orientation detection, including a 'hybrid' mode that keeps text pages and OCRs only the image pages of mixed PDFs; existing .md/.markdown files are carried through into the output so a folder sweep yields a complete collection; Google Drive pointer files (.gdoc/.gslides/.gsheet/.gdrive) become clickable 'Open in Drive' link notes (no raw JSON / no embedded email); collision-safe output names (name.pdf.md / name.docx.md); structure-preserving output; a 'detail=summary' option to shrink the tool result on very large sweeps (full manifest still written to INDEX.md); and a rich, still-token-free summary.\n\nTools: convert_attachments_to_markdown, list_convertible_attachments, convert_one, peek_markdown, ocr_capabilities.",
   "author": {
-    "name": "Aninda",
+    "name": "Aninda Sundar Howlader",
     "url": "https://github.com/GRU-953"
   },
   "icon": "icon.png",
@@ -29,6 +29,8 @@
         "MARKITDOWN_TRANSCRIBE": "${user_config.transcribe_mode}",
         "MARKITDOWN_WHISPER_MODEL": "${user_config.whisper_model}",
         "MARKITDOWN_PDF_TABLES": "${user_config.pdf_tables}",
+        "MARKITDOWN_AUTO_UPDATE": "${user_config.auto_update_markitdown}",
+        "MARKITDOWN_WORKERS": "${user_config.workers}",
         "MARKITDOWN_ENABLE_PLUGINS": "${user_config.enable_plugins}"
       }
     }
@@ -122,6 +124,20 @@
       "title": "PDF table extraction",
       "description": "auto = extract tables from digital PDFs as clean markdown tables via pdfplumber (default); off = plain text only; force. Scanned PDFs still fall back to OCR.",
       "default": "auto",
+      "required": false
+    },
+    "auto_update_markitdown": {
+      "type": "boolean",
+      "title": "Auto-update MarkItDown engine",
+      "description": "Keep the underlying MarkItDown engine current from upstream (microsoft/markitdown) automatically in the background (checked once/day; applied on next launch).",
+      "default": true,
+      "required": false
+    },
+    "workers": {
+      "type": "string",
+      "title": "Parallel workers",
+      "description": "Conversion worker processes. Blank = auto (tuned to performance cores + unified memory on Apple Silicon).",
+      "default": "",
       "required": false
     },
     "enable_plugins": {

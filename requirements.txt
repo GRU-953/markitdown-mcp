@@ -16,6 +16,8 @@ pytesseract>=0.3.10
 faster-whisper>=1.0.0
 # Plain-text extraction for legacy RTF (markitdown has no RTF converter).
 striprtf>=0.0.26
+# Apple-Silicon GPU-accelerated Whisper (preferred on M-series; faster-whisper is the fallback).
+mlx-whisper>=0.4.0; platform_machine == "arm64" and sys_platform == "darwin"
 
 # Optional — local image *descriptions* (vision) for images OCR can't read.
 # Uses the Ollama app + an open-source vision model. No extra Python package is

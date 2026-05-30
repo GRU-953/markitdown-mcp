@@ -39,6 +39,7 @@ import glob as _glob
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -158,13 +159,46 @@ def _ollama_host() -> str:
     return os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 
 
+_IS_ARM64 = platform.machine() == "arm64"
+# Native-thread env knobs — pinned to 1 per pool worker to avoid oversubscription.
+_POOL_THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+
+
+def _sysctl_int(name: str, default: int = 0) -> int:
+    try:
+        return int(subprocess.run(["sysctl", "-n", name], capture_output=True).stdout or default)
+    except Exception:
+        return default
+
+
+def _mem_gb() -> float:
+    b = _sysctl_int("hw.memsize", 0)
+    if b:
+        return b / (1024 ** 3)
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / (1024 ** 3)
+    except Exception:
+        return 8.0
+
+
 def _workers(v: Optional[int]) -> int:
     if v is None:
         try:
             v = int(os.getenv("MARKITDOWN_WORKERS", "0"))
         except ValueError:
             v = 0
-    return int(v) if v and v >= 1 else min(8, (os.cpu_count() or 4))
+    if v and v >= 1:
+        return int(v)
+    base = min(8, os.cpu_count() or 4)
+    if _IS_ARM64:
+        # Apple Silicon: bias to performance cores (efficiency cores add little for
+        # CPU-bound parsing and cost memory + thread churn).
+        pcores = _sysctl_int("hw.perflevel0.physicalcpu", 0)
+        if pcores:
+            base = min(base, pcores + 2)
+    # Cap by unified memory (~1.5 GB headroom per worker process).
+    return max(2, min(base, int(_mem_gb() // 1.5) or 2))
 
 
 def _is_pointer(path: Path) -> bool:
@@ -480,7 +514,24 @@ _WHISPER = None
 _WHISPER_LOCK = threading.Lock()
 
 
-def _whisper_available() -> bool:
+_MLX_WHISPER_REPO = {
+    "tiny": "mlx-community/whisper-tiny-mlx", "base": "mlx-community/whisper-base-mlx",
+    "small": "mlx-community/whisper-small-mlx", "medium": "mlx-community/whisper-medium-mlx",
+    "large": "mlx-community/whisper-large-v3-mlx", "large-v3": "mlx-community/whisper-large-v3-mlx",
+}
+
+
+def _mlx_whisper_ok() -> bool:
+    if not _IS_ARM64:
+        return False
+    try:
+        import mlx_whisper  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _faster_whisper_ok() -> bool:
     try:
         import faster_whisper  # noqa: F401
         return True
@@ -488,8 +539,16 @@ def _whisper_available() -> bool:
         return False
 
 
+def _whisper_available() -> bool:
+    return _mlx_whisper_ok() or _faster_whisper_ok()
+
+
+def _mlx_repo(model_name: str) -> str:
+    return _MLX_WHISPER_REPO.get(model_name, f"mlx-community/whisper-{model_name}-mlx")
+
+
 def _whisper(model_name: str):
-    """Lazy-load and cache a local Whisper model (CPU int8 — fast, no GPU/torch)."""
+    """Lazy-load and cache a faster-whisper model (CPU int8 fallback)."""
     global _WHISPER
     if _WHISPER is None or _WHISPER[0] != model_name:
         with _WHISPER_LOCK:
@@ -499,7 +558,27 @@ def _whisper(model_name: str):
     return _WHISPER[1]
 
 
+def _prewarm_whisper(model_name: str) -> None:
+    """Cache the model once (main process) so pool workers don't race to download."""
+    try:
+        if _mlx_whisper_ok():
+            import huggingface_hub
+            huggingface_hub.snapshot_download(_mlx_repo(model_name))
+        elif _faster_whisper_ok():
+            _whisper(model_name)
+    except Exception:
+        pass
+
+
 def _transcribe_audio(path: Path, model_name: str):
+    # Prefer Apple-GPU MLX Whisper on Apple Silicon; fall back to faster-whisper (CPU).
+    if _mlx_whisper_ok():
+        try:
+            import mlx_whisper
+            r = mlx_whisper.transcribe(str(path), path_or_hf_repo=_mlx_repo(model_name))
+            return (r.get("text") or "").strip(), None, r.get("language")
+        except Exception:
+            pass
     model = _whisper(model_name)
     segments, info = model.transcribe(str(path), beam_size=1)
     text = " ".join(s.text.strip() for s in segments).strip()
@@ -878,10 +957,7 @@ def convert_attachments_to_markdown(
         _ensure_ollama()
     # Pre-load Whisper once (avoids a model-download race across pool workers).
     if tmode != "off" and _whisper_available() and any(p.suffix.lower() in AUDIO_EXTS for p, _ in items):
-        try:
-            _whisper(wmodel)
-        except Exception:
-            pass
+        _prewarm_whisper(wmodel)
 
     converted, md_copied, empty, skipped, failed = [], [], [], [], []
     if sources:
@@ -920,13 +996,22 @@ def convert_attachments_to_markdown(
     results = None
     if nworkers > 1 and len(work) >= 4:
         args = [(p, t, is_md, mode, lang, maxp, vmode, vmodel, tmode, wmodel, ptmode) for (p, t, is_md) in work]
-        for Pool in (ProcessPoolExecutor, ThreadPoolExecutor):
-            try:
-                with Pool(max_workers=nworkers) as ex:
-                    results = list(ex.map(_do_item_tuple, args))
-                break
-            except Exception:  # noqa: BLE001
-                results = None
+        # Pin each worker's native libs (numpy/BLAS/onnxruntime) to one thread so N
+        # processes don't oversubscribe cores — a big win on Apple Silicon (avoids
+        # efficiency-core thrash + memory churn). Spawned workers inherit this env.
+        _saved = {k: os.environ.get(k) for k in _POOL_THREAD_ENV}
+        os.environ.update({k: "1" for k in _POOL_THREAD_ENV})
+        try:
+            for Pool in (ProcessPoolExecutor, ThreadPoolExecutor):
+                try:
+                    with Pool(max_workers=nworkers) as ex:
+                        results = list(ex.map(_do_item_tuple, args))
+                    break
+                except Exception:  # noqa: BLE001
+                    results = None
+        finally:
+            for k, v in _saved.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
     if results is None:
         results = [_do_item(p, t, is_md, mode, lang, maxp, vmode, vmodel, tmode, wmodel, ptmode) for (p, t, is_md) in work]
 
@@ -1107,9 +1192,15 @@ def ocr_capabilities() -> dict:
     else:
         vis["hint"] = "Install Ollama (brew install ollama; brew services start ollama) and pull a vision model (ollama pull moondream)."
     info["vision"] = vis
-    info["transcription"] = {"available": _whisper_available(), "engine": "faster-whisper (local)",
+    info["transcription"] = {"available": _whisper_available(),
+                             "engine": "mlx-whisper (Apple GPU)" if _mlx_whisper_ok() else "faster-whisper (CPU)",
                              "default_model": _whisper_model(None)}
     info["workers_default"] = _workers(None)
+    info["hardware"] = {"arch": platform.machine(), "apple_silicon": _IS_ARM64,
+                        "performance_cores": _sysctl_int("hw.perflevel0.physicalcpu") or None,
+                        "memory_gb": round(_mem_gb(), 1)}
+    info["markitdown_auto_update"] = (os.getenv("MARKITDOWN_AUTO_UPDATE", "on").strip().lower()
+                                      not in ("off", "0", "false", "no"))
     return info
 
 
@@ -1146,9 +1237,39 @@ def _selftest() -> int:
     return 0 if ok else 1
 
 
+_MARKITDOWN_GIT = ("markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription] @ "
+                   "git+https://github.com/microsoft/markitdown.git#subdirectory=packages/markitdown")
+
+
+def _maybe_autoupdate_markitdown() -> None:
+    """Best-effort, throttled (once/day), non-blocking background upgrade of markitdown
+    to the latest from microsoft/markitdown.git. Takes effect on the NEXT launch and
+    never disrupts the current session. Opt out with MARKITDOWN_AUTO_UPDATE=off."""
+    if os.getenv("MARKITDOWN_AUTO_UPDATE", "on").strip().lower() in ("off", "0", "false", "no"):
+        return
+    stamp = _STATE_DIR / "markitdown_update_check"
+    try:
+        if stamp.exists() and (time.time() - stamp.stat().st_mtime) < 86400:
+            return
+    except Exception:
+        pass
+
+    def _run():
+        try:
+            _STATE_DIR.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(str(time.time()))
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", _MARKITDOWN_GIT],
+                           capture_output=True, timeout=900)
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, name="markitdown-autoupdate", daemon=True).start()
+
+
 def main() -> None:
     if "--selftest" in sys.argv:
         raise SystemExit(_selftest())
+    _maybe_autoupdate_markitdown()   # keep markitdown current from upstream (background)
     mcp.run()
 
 

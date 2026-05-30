@@ -1,163 +1,114 @@
-# MarkItDown Attachments — a token-free MCP server (with OCR)
+<div align="center">
+
+# MarkItDown Attachments
+
+**A token-free MCP server that converts your Claude chat & project attachments to Markdown — entirely on your machine.**
 
 [![CI](https://github.com/GRU-953/markitdown-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/GRU-953/markitdown-mcp/actions/workflows/ci.yml)
+&nbsp;![Python 3.10–3.13](https://img.shields.io/badge/python-3.10–3.13-blue)
+&nbsp;![Platform](https://img.shields.io/badge/platform-macOS%20·%20Linux%20·%20Windows-lightgrey)
+&nbsp;![License: MIT](https://img.shields.io/badge/license-MIT-green)
+&nbsp;![Apple Silicon optimized](https://img.shields.io/badge/Apple%20Silicon-optimized-black?logo=apple)
 
-Convert Claude **chat & project attachments** (and any local files) to Markdown
-using Microsoft's [MarkItDown](https://github.com/microsoft/markitdown), **without
-spending context tokens on the file contents** — now with **OCR** for images and
-scanned PDFs.
+</div>
 
-## Why this exists
+---
 
-The stock [`markitdown-mcp`](https://github.com/microsoft/markitdown/tree/main/packages/markitdown-mcp)
-returns the converted Markdown as the tool result — so it lands in the
-conversation and consumes tokens. This server instead converts each file
-**locally** and **writes a `.md` file to disk**, returning only compact metadata
-(paths, byte/char counts, status). Converting a folder of attachments therefore
-costs effectively **zero context tokens**; Claude reads individual `.md` files
-later, only when their content is actually needed.
+PDF, Word, Excel, PowerPoint, images, audio, HTML and more → clean Markdown **written to disk**, with only compact metadata returned to the model. Converting a whole folder of attachments costs **effectively zero context tokens**.
 
-> **Measured:** on a real 76-file / 94 MB corpus, one batch call returned a
-> **25 KB** metadata result while writing **1.75 M characters** of Markdown to
-> disk — **69× more content than tokens returned.**
+> **Measured:** a real 76-file / 94 MB folder converts in one call returning **~25 KB** of metadata while writing **1.75 M characters** of Markdown to disk — **≈70× more content than tokens returned.**
 
-## Supported formats
+## Why it's different
 
-PDF · Word (`.docx`) · PowerPoint (`.pptx`) · Excel (`.xlsx`/`.xls`) · images
-(`.png/.jpg/...` — **OCR'd**) · audio (`.wav/.mp3/...`) · HTML · CSV/TSV · JSON ·
-XML · EPub · ZIP (recurses) · Outlook `.msg` · Jupyter `.ipynb`, and more.
-Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
-"Open in Drive" link notes.
+Everything runs **locally and privately** — no cloud APIs, no keys, no tokens:
 
-## Features
+| | |
+|---|---|
+| 🪙 **Token-free** | Conversions write `.md` files to disk; tools return only paths/sizes/status. |
+| 🔤 **OCR, 163 languages** | Images & scanned PDFs via Tesseract, automatic orientation, per-page **hybrid** mode, and OCR of images **embedded inside** Office files. |
+| 👁️ **Local vision LLM** | Images OCR can't read are *described* by a local model (Ollama), started on demand and idle-stopped. |
+| 🎙️ **Local transcription** | Audio transcribed on-device with **Whisper** (no cloud). |
+| 📊 **Clean tables** | Digital-PDF tables reconstructed as real Markdown tables via pdfplumber. |
+| 🍎 **Apple-Silicon tuned** | Performance-core parallelism, **GPU-accelerated Whisper (MLX)**, unified-memory-aware concurrency. |
+| ♻️ **Always current** | The underlying MarkItDown engine auto-updates from upstream. |
+| 🧱 **Robust** | Collision-safe names, structure-preserving output, honest `failed`/`empty` reporting — a bad file never crashes a batch. |
 
-- **Parallel batch conversion** — files convert across a **process pool** (true
-  multi-core, bypasses the GIL; ~3.8× on a 10-core Mac). Output names are assigned
-  single-threaded first, so collision-safety stays race-free. `workers` (default
-  = min(8, cores); `1` = sequential).
-- **Local vision LLM (open-source, via Ollama)** — images OCR can't read (photos,
-  diagrams) are **described** by a local model (default `moondream`). Runs entirely
-  locally and the description is written to disk — **no cloud, no API keys, no tokens.**
-  `vision`: `auto` (default), `off`, `force`; no-ops gracefully if Ollama isn't installed.
-  The model server is **started on demand** when a conversion needs it and
-  **auto-stopped after 5 min idle** (`OLLAMA_IDLE_TIMEOUT`), so nothing runs in the
-  background between jobs — and it only ever stops an instance it started itself.
-- **Local speech-to-text** — audio (`.wav/.mp3/.m4a/.flac`) is transcribed **on-device**
-  with open-source **Whisper** (faster-whisper), replacing markitdown's cloud Google
-  transcription. `transcribe`: `auto` (default) / `off`; `whisper_model` (default
-  `base`). Transcript written to disk — local, offline, token-free.
-- **Clean PDF tables** — digital PDFs are reconstructed with **pdfplumber**: tables
-  become proper markdown tables (not mangled text), non-table text preserved, no
-  duplication. `pdf_tables`: `auto` (default) / `off` / `force`. Scanned PDFs still
-  fall back to OCR.
-- **OCR** (Tesseract) for images and scanned/image-only PDFs, with automatic
-  page-orientation detection (sideways scans are read correctly). The `ocr`
-  argument: `auto` (default), `off`, `force`, or **`hybrid`** — per-page, keeping
-  text pages and OCR-ing only the image pages of mixed PDFs (e.g. a 25 MB report
-  went from 5.5 K → 8.6 K chars by recovering its chart/infographic pages). With
-  `force`/`hybrid`, images **embedded inside** Word/PowerPoint/Excel files are
-  OCR'd too (e.g. a slide deck gained **+7.9 K chars** from its 44 image-slides).
-- **Existing markdown carried through** — `.md`/`.markdown` files in the input are
-  copied into the output set (structure-preserved) so a folder sweep yields a
-  *complete* collection, not a partial one. (`include_existing_markdown`, default on.)
-- **Drive pointer links** — `.gdoc` etc. become a small Markdown note with the
-  Google Drive URL (no raw JSON, no embedded email).
-- **Collision-safe names** — same-stem files of different types become
-  `report.pdf.md` / `report.docx.md` instead of overwriting or opaque `-2`.
-- **Structure-preserving output** — sub-folders are mirrored under `output_dir`.
-- **Compact results for big sweeps** — `detail="summary"` returns just totals +
-  failures + a small sample (~2 KB instead of ~30 KB); the full manifest is in INDEX.md.
-- **Rich summary** — `converted / OCR'd / drive-links / markdown-copied / empty /
-  skipped / failed` plus totals. Text-less-but-valid files (e.g. photos) are
-  reported as `empty`; files that genuinely error (corrupt, truncated, 0-byte,
-  unreadable, password-protected) are reported as `failed` — a batch never
-  crashes on a bad file. Stress-tested against corrupt/malformed/unreadable inputs.
+## Apple M-series optimization
+
+On Apple Silicon the server tunes itself to the hardware:
+
+- **CPU** — parallel conversion across a process pool sized to the **performance cores** (not all cores), with each worker's native libraries pinned to a single thread to avoid oversubscription. *On an M4: 6 workers match 10 workers' throughput while using ~600 MB less memory; 3.3× faster than sequential.*
+- **GPU** — Whisper transcription runs on the Apple GPU/Neural Engine via **MLX** (`mlx-whisper`), with a CPU `faster-whisper` fallback. Vision (Ollama) uses Metal.
+- **Memory** — worker count is capped against unified memory, and the vision model is started on demand and stopped after idle.
 
 ## Tools
 
-| Tool | What it does | Returns |
-|------|--------------|---------|
-| `convert_attachments_to_markdown` | Batch-convert files/dirs/globs to `.md` (with OCR) | metadata only |
-| `list_convertible_attachments` | Enumerate convertible files; pointers listed separately | paths/sizes |
-| `convert_one` | Convert a single file to a `.md` | metadata only |
-| `peek_markdown` | **Opt-in** small preview of a generated `.md` (≤4000 chars) | short snippet |
-| `ocr_capabilities` | Report Tesseract availability / version / languages | small object |
-
-Only `peek_markdown` ever returns file text, and only a small slice you request.
-
-## Configuration
-
-Set via environment variables (Claude Code `.mcp.json` `env`) or the extension's
-**user config** (Claude Desktop):
-
-| Variable / config | Meaning |
-|-------------------|---------|
-| `MARKITDOWN_INPUT_DIR` / *Default attachments folder* | Folder scanned when you don't name files |
-| `MARKITDOWN_OUTPUT_DIR` / *Markdown output folder* | Where `.md` files go (default: next to source) |
-| `MARKITDOWN_OCR` / *OCR mode* | `auto` (default) · `off` · `force` |
-| `MARKITDOWN_OCR_LANG` / *OCR language(s)* | e.g. `eng` or `eng+ben` |
-| `MARKITDOWN_OCR_MAX_PAGES` | Max PDF pages to OCR per file (default 50) |
-| `MARKITDOWN_ENABLE_PLUGINS` / *Enable plugins* | Third-party markitdown plugins (default off) |
+| Tool | Purpose |
+|------|---------|
+| `convert_attachments_to_markdown` | Batch-convert files / directories / globs (parallel) |
+| `list_convertible_attachments` | Enumerate convertible files (paths/sizes only) |
+| `convert_one` | Convert a single file |
+| `peek_markdown` | Opt-in small preview of a generated `.md` |
+| `ocr_capabilities` | Report local OCR / vision / transcription + hardware tuning |
 
 ## Install
 
-### Build the runtime (once)
-
 ```bash
-./install.sh                       # creates .venv + installs Python deps
-brew install tesseract             # OCR engine (optional but recommended)
-# brew install tesseract-lang      # extra OCR languages (e.g. Bengali)
-```
+git clone https://github.com/GRU-953/markitdown-mcp.git
+cd markitdown-mcp
+./install.sh                 # Python venv + dependencies (Python 3.10–3.13; 3.12 recommended)
 
-Requires Python **3.10–3.13** (3.12 recommended). Without Tesseract the server
-still runs — it just reports OCR as unavailable.
+# Optional local engines (recommended):
+brew install tesseract tesseract-lang ffmpeg        # OCR (163 languages) + audio
+brew install ollama && ollama pull moondream        # local vision model
+```
 
 ### Claude Code
-
-Add to your project's `.mcp.json` (absolute paths):
+Add to your project's `.mcp.json` (absolute paths), then reload and approve:
 
 ```json
-{
-  "mcpServers": {
-    "markitdown-attachments": {
-      "command": "/abs/path/to/.venv/bin/python",
-      "args": ["/abs/path/to/markitdown-attachments-mcp/server/markitdown_attachments_server.py"],
-      "env": {}
-    }
-  }
-}
+{ "mcpServers": { "markitdown-attachments": {
+  "command": "/abs/path/markitdown-mcp/.venv/bin/python",
+  "args": ["/abs/path/markitdown-mcp/server/markitdown_attachments_server.py"]
+}}}
 ```
 
-Reload the project; approve the server when prompted.
-
 ### Claude Desktop
+Install `dist/markitdown-attachments.mcpb` via **Settings → Extensions → Install from file…**, run `install.sh` in the installed folder, then restart.
 
-Install `dist/markitdown-attachments.mcpb` via **Settings → Extensions → Install
-from file…**, then run `install.sh` inside the installed extension folder so its
-`.venv` is created. Restart the app.
+## Usage
 
-## Usage examples
+> *"Convert every attachment in `~/Documents/contracts` to markdown."*
 
-> "Convert every attachment in `~/Documents/Lex-Adex` to markdown."
-> → `convert_attachments_to_markdown(input_dir="~/Documents/Lex-Adex", write_index=True)`
+Claude calls `convert_attachments_to_markdown(input_dir="~/Documents/contracts")`, gets back the list of generated `.md` paths — no document text — and reads only the ones it needs.
 
-> "OCR these scanned PDFs into markdown next to them."
-> → `convert_attachments_to_markdown(sources=["scan1.pdf","scan2.pdf"], ocr="force")`
+## Configuration
 
-Claude gets back the list of generated `.md` paths — no document text — and opens
-any of them on demand.
+| Setting / env | Meaning |
+|---|---|
+| `ocr` · `MARKITDOWN_OCR` | `auto` (default) · `off` · `force` · `hybrid` |
+| `ocr_lang` · `MARKITDOWN_OCR_LANG` | e.g. `eng` or `eng+ben` |
+| `vision` · `MARKITDOWN_VISION` | `auto` (default) · `off` · `force` (local Ollama) |
+| `pdf_tables` · `MARKITDOWN_PDF_TABLES` | `auto` (default) · `off` · `force` |
+| `transcribe` · `MARKITDOWN_TRANSCRIBE` | `auto` (default) · `off`; `whisper_model` (default `base`) |
+| `workers` · `MARKITDOWN_WORKERS` | blank = auto (performance-core + memory tuned) |
+| `MARKITDOWN_AUTO_UPDATE` | keep MarkItDown current from upstream (default on) |
+| `detail` | `full` (default) · `summary` (compact result on huge sweeps) |
 
 ## Testing
 
-`tests/test_harness.py` drives the server over the real MCP protocol against a
-folder you point it at, checking every tool, OCR, pointer handling, collision
-safety, idempotency, accuracy spot-checks, and token-free guarantees:
-
 ```bash
-../.venv/bin/python tests/test_harness.py full /path/to/your/files
+.venv/bin/python tests/test_harness.py full /path/to/your/files
 ```
 
-## Credits
+Drives the server over the real MCP protocol: every tool, OCR, vision, transcription, PDF tables, collision-safety, idempotency, accuracy spot-checks, and the token-free guarantee. Continuous integration runs the self-test on every push.
 
-Built on [microsoft/markitdown](https://github.com/microsoft/markitdown) (MIT) and
-[Tesseract OCR](https://github.com/tesseract-ocr/tesseract). This wrapper is MIT-licensed.
+## Built with
+
+Open-source tooling: [MarkItDown](https://github.com/microsoft/markitdown) (conversion engine), [Tesseract](https://github.com/tesseract-ocr/tesseract) (OCR), [Ollama](https://ollama.com) (local vision), [Whisper](https://github.com/openai/whisper) / [MLX](https://github.com/ml-explore/mlx) (transcription), and [pdfplumber](https://github.com/jsvine/pdfplumber) (PDF tables).
+
+## Author
+
+**Aninda Sundar Howlader** — [@GRU-953](https://github.com/GRU-953)
+
+MIT-licensed. See [CHANGELOG.md](CHANGELOG.md).
