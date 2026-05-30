@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    name: Selftest (token-free conversion, OCR, markdown carry, pointer/PII)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies (tesseract, ffmpeg)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tesseract-ocr ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+
+      - name: Run selftest
+        run: python server/markitdown_attachments_server.py --selftest
+
+      - name: Smoke-check tool registration (all 5 MCP tools present)
+        run: |
+          python - <<'PY'
+          import sys; sys.path.insert(0, "server")
+          import markitdown_attachments_server as m
+          tools = {t.name for t in m.mcp._tool_manager.list_tools()}
+          expected = {"convert_attachments_to_markdown", "list_convertible_attachments",
+                      "convert_one", "peek_markdown", "ocr_capabilities"}
+          missing = expected - tools
+          assert not missing, f"missing tools: {missing}"
+          print("OK — tools:", sorted(tools))
+          PY
