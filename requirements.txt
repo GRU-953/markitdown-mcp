@@ -14,6 +14,8 @@ markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription]>=0.1.1,<0.2.0
 pytesseract>=0.3.10
 # Local, offline speech-to-text for audio (replaces markitdown's cloud Google transcription).
 faster-whisper>=1.0.0
+# Plain-text extraction for legacy RTF (markitdown has no RTF converter).
+striprtf>=0.0.26
 
 # Optional — local image *descriptions* (vision) for images OCR can't read.
 # Uses the Ollama app + an open-source vision model. No extra Python package is

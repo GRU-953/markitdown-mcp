@@ -5,6 +5,13 @@ converts Claude chat/project attachments to Markdown **locally**, writing `.md`
 files to disk and returning only metadata. Built on
 [microsoft/markitdown](https://github.com/microsoft/markitdown).
 
+## v2.6.1
+- **Fixed RTF** — `.rtf` files previously passed raw `\rtf` control codes through as
+  fake "content"; they're now extracted to plain text locally via `striprtf`.
+  (Found by a maintenance audit of advertised vs. actually-supported formats:
+  legacy `.doc`/`.ppt` correctly report unsupported; `.xls`, `.rss`/`.atom`/`.tsv`,
+  and image variants `.bmp/.gif/.tiff/.webp` all confirmed working.)
+
 ## v2.6.0
 - **Clean PDF tables** — digital PDFs are reconstructed via pdfplumber so tables
   render as proper markdown tables (non-table text preserved, no duplication);

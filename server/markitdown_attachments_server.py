@@ -580,6 +580,17 @@ def _convert_file(path: Path, ocr: str, lang: str, max_pages: int,
                 else "install faster-whisper for local transcription")
         return f"_(Audio file — {note}.)_\n", meta
 
+    # RTF: markitdown has no RTF converter (it passes raw \rtf control codes through
+    # as fake "content"), so extract plain text locally with striprtf instead.
+    if ext == ".rtf":
+        try:
+            from striprtf.striprtf import rtf_to_text
+            meta["method"] = "rtf"
+            return rtf_to_text(path.read_text(errors="replace")).strip(), meta
+        except Exception as e:  # noqa: BLE001
+            meta["convert_error"] = f"rtf: {type(e).__name__}: {e}"
+            return "", meta
+
     if ocr == "hybrid" and ext == ".pdf":
         try:
             text, n, _done, trunc, ocr_pages = _hybrid_pdf(path, lang, max_pages)
