@@ -46,6 +46,10 @@ Google Drive pointer files (`.gdoc/.gslides/.gsheet/.gdrive`) become clickable
   with open-source **Whisper** (faster-whisper), replacing markitdown's cloud Google
   transcription. `transcribe`: `auto` (default) / `off`; `whisper_model` (default
   `base`). Transcript written to disk — local, offline, token-free.
+- **Clean PDF tables** — digital PDFs are reconstructed with **pdfplumber**: tables
+  become proper markdown tables (not mangled text), non-table text preserved, no
+  duplication. `pdf_tables`: `auto` (default) / `off` / `force`. Scanned PDFs still
+  fall back to OCR.
 - **OCR** (Tesseract) for images and scanned/image-only PDFs, with automatic
   page-orientation detection (sideways scans are read correctly). The `ocr`
   argument: `auto` (default), `off`, `force`, or **`hybrid`** — per-page, keeping

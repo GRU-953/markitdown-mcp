@@ -149,6 +149,11 @@ def _whisper_model(v: Optional[str]) -> str:
     return (v or os.getenv("MARKITDOWN_WHISPER_MODEL") or "base").strip()
 
 
+def _pdf_tables_mode(v: Optional[str]) -> str:
+    v = (v or os.getenv("MARKITDOWN_PDF_TABLES") or "auto").strip().lower()
+    return v if v in ("auto", "off", "force") else "auto"
+
+
 def _ollama_host() -> str:
     return os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 
@@ -255,6 +260,50 @@ def _hybrid_pdf(path: Path, lang: str, max_pages: int):
         return "\n\n".join(parts), n, done, n > done, ocr_pages
     finally:
         pdf.close()
+
+
+def _table_to_md(rows) -> str:
+    rows = [[("" if c is None else str(c).replace("\n", " ").strip()) for c in r]
+            for r in rows if any(c not in (None, "") for c in r)]
+    if not rows:
+        return ""
+    ncol = max(len(r) for r in rows)
+    rows = [r + [""] * (ncol - len(r)) for r in rows]
+    out = ["| " + " | ".join(rows[0]) + " |",
+           "| " + " | ".join("---" for _ in range(ncol)) + " |"]
+    out += ["| " + " | ".join(r) + " |" for r in rows[1:]]
+    return "\n".join(out)
+
+
+def _pdf_with_tables(path: Path, max_pages: int):
+    """Reconstruct a digital PDF with pdfplumber: non-table text + tables rendered
+    as clean markdown tables (table regions removed from the text, so no
+    duplication). Returns (text, n_tables)."""
+    import pdfplumber
+    parts, ntab = [], 0
+    with pdfplumber.open(str(path)) as pdf:
+        for page in pdf.pages[:max_pages]:
+            tables = page.find_tables()
+            bboxes = [t.bbox for t in tables]
+
+            def _keep(o, _bb=bboxes):
+                cx = (o.get("x0", 0) + o.get("x1", 0)) / 2
+                cy = (o.get("top", 0) + o.get("bottom", 0)) / 2
+                return not any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in _bb)
+
+            try:
+                txt = ((page.filter(_keep).extract_text() if bboxes else page.extract_text()) or "").strip()
+            except Exception:
+                txt = (page.extract_text() or "").strip()
+            seg = [txt] if txt else []
+            for t in tables:
+                md = _table_to_md(t.extract())
+                if md:
+                    seg.append(md)
+                    ntab += 1
+            if seg:
+                parts.append("\n\n".join(seg))
+    return "\n\n".join(parts), ntab
 
 
 _OFFICE_MEDIA_RE = re.compile(r"(?:word|ppt|xl)/media/", re.I)
@@ -498,7 +547,8 @@ def _ocr_needed(ext: str, base_len: int, mode: str) -> bool:
 
 def _convert_file(path: Path, ocr: str, lang: str, max_pages: int,
                   vision: str = "off", vmodel: str = "moondream",
-                  transcribe: str = "auto", whisper_model: str = "base"):
+                  transcribe: str = "auto", whisper_model: str = "base",
+                  pdf_tables: str = "auto"):
     """Convert one file to markdown text. Returns (text, meta)."""
     ext = path.suffix.lower()
     meta = {"method": "markitdown", "ocr_used": False, "is_image": ext in IMAGE_EXTS,
@@ -544,6 +594,19 @@ def _convert_file(path: Path, ocr: str, lang: str, max_pages: int,
             return text, meta
         except Exception as e:  # noqa: BLE001
             meta["ocr_error"] = f"{type(e).__name__}: {e}"
+
+    # Digital PDF: reconstruct tables with pdfplumber (clean markdown tables, no
+    # duplication). Scanned/near-empty PDFs fall through to markitdown + OCR.
+    if ext == ".pdf" and pdf_tables in ("auto", "force"):
+        try:
+            pt, ntab = _pdf_with_tables(path, max_pages)
+            if pt.strip() and (ntab > 0 or len(pt) >= 50):
+                meta["method"] = "pdf+tables" if ntab else "pdf-text"
+                if ntab:
+                    meta["pdf_tables"] = ntab
+                return pt, meta
+        except Exception as e:  # noqa: BLE001 — fall through to markitdown
+            meta.setdefault("pdf_tables_error", f"{type(e).__name__}: {e}")
 
     base = ""
     try:
@@ -695,7 +758,8 @@ def _write_index(out_dir: Path, entries: list) -> Path:
 
 
 def _do_item(path: Path, target: Path, is_md: bool, mode: str, lang: str, maxp: int,
-             vision: str, vmodel: str, transcribe: str = "auto", wmodel: str = "base"):
+             vision: str, vmodel: str, transcribe: str = "auto", wmodel: str = "base",
+             pdf_tables: str = "auto"):
     """Worker: convert/copy ONE pre-targeted item. Returns (category, record).
     Writes content to disk; returns only metadata (token-free, thread-safe)."""
     try:
@@ -705,7 +769,7 @@ def _do_item(path: Path, target: Path, is_md: bool, mode: str, lang: str, maxp: 
             ch = len(target.read_text(encoding="utf-8", errors="replace"))
             return ("copied", {"source": str(path), "markdown_file": str(target),
                                "bytes": target.stat().st_size, "chars": ch, "method": "copied-markdown"})
-        text, meta = _convert_file(path, mode, lang, maxp, vision, vmodel, transcribe, wmodel)
+        text, meta = _convert_file(path, mode, lang, maxp, vision, vmodel, transcribe, wmodel, pdf_tables)
         if not text.strip():
             err = meta.get("convert_error") or meta.get("ocr_error") or meta.get("vision_error")
             if err:
@@ -717,7 +781,7 @@ def _do_item(path: Path, target: Path, is_md: bool, mode: str, lang: str, maxp: 
                "bytes": target.stat().st_size, "chars": len(text), "method": meta["method"]}
         for mk, ok_key in (("ocr_used", "ocr"), ("ocr_pages", "ocr_pages"), ("pages", "pages"),
                            ("ocr_truncated", "ocr_truncated"), ("embedded_images_ocr", "embedded_images_ocr"),
-                           ("vision_used", "vision")):
+                           ("vision_used", "vision"), ("pdf_tables", "pdf_tables")):
             if meta.get(mk):
                 rec[ok_key] = meta[mk]
         return ("converted", rec)
@@ -748,6 +812,7 @@ def convert_attachments_to_markdown(
     vision_model: Optional[str] = None,
     transcribe: Optional[str] = None,
     whisper_model: Optional[str] = None,
+    pdf_tables: Optional[str] = None,
     workers: Optional[int] = None,
     preserve_structure: bool = True,
     write_index: bool = False,
@@ -788,6 +853,7 @@ def convert_attachments_to_markdown(
     mode, lang, maxp = _ocr_mode(ocr), _ocr_lang(ocr_lang), _ocr_max_pages(ocr_max_pages)
     vmode, vmodel = _vision_mode(vision), _vision_model(vision_model)
     tmode, wmodel = _transcribe_mode(transcribe), _whisper_model(whisper_model)
+    ptmode = _pdf_tables_mode(pdf_tables)
     nworkers = _workers(workers)
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -840,7 +906,7 @@ def convert_attachments_to_markdown(
     # Falls back to a thread pool, then sequential, if a process pool can't start.
     results = None
     if nworkers > 1 and len(work) >= 4:
-        args = [(p, t, is_md, mode, lang, maxp, vmode, vmodel, tmode, wmodel) for (p, t, is_md) in work]
+        args = [(p, t, is_md, mode, lang, maxp, vmode, vmodel, tmode, wmodel, ptmode) for (p, t, is_md) in work]
         for Pool in (ProcessPoolExecutor, ThreadPoolExecutor):
             try:
                 with Pool(max_workers=nworkers) as ex:
@@ -849,7 +915,7 @@ def convert_attachments_to_markdown(
             except Exception:  # noqa: BLE001
                 results = None
     if results is None:
-        results = [_do_item(p, t, is_md, mode, lang, maxp, vmode, vmodel, tmode, wmodel) for (p, t, is_md) in work]
+        results = [_do_item(p, t, is_md, mode, lang, maxp, vmode, vmodel, tmode, wmodel, ptmode) for (p, t, is_md) in work]
 
     ocr_count = pointers = vision_count = total_chars = total_bytes = 0
     for cat, rec in results:
@@ -946,6 +1012,7 @@ def convert_one(
     vision_model: Optional[str] = None,
     transcribe: Optional[str] = None,
     whisper_model: Optional[str] = None,
+    pdf_tables: Optional[str] = None,
 ) -> dict:
     """Convert a single file to a Markdown FILE on disk; returns only metadata (token-free).
 
@@ -968,7 +1035,8 @@ def convert_one(
             _ensure_ollama()
         text, meta = _convert_file(src, _ocr_mode(ocr), _ocr_lang(ocr_lang), _ocr_max_pages(ocr_max_pages),
                                    vmode, _vision_model(vision_model),
-                                   _transcribe_mode(transcribe), _whisper_model(whisper_model))
+                                   _transcribe_mode(transcribe), _whisper_model(whisper_model),
+                                   _pdf_tables_mode(pdf_tables))
         if not text.strip():
             err = meta.get("convert_error") or meta.get("ocr_error") or meta.get("vision_error")
             if err:
@@ -981,7 +1049,7 @@ def convert_one(
         target.write_text(text, encoding="utf-8")
         out = {"ok": True, "source": str(src), "markdown_file": str(target),
                "bytes": target.stat().st_size, "chars": len(text), "method": meta["method"]}
-        for k in ("ocr_used", "ocr_pages", "pages", "ocr_truncated", "embedded_images_ocr", "vision_used"):
+        for k in ("ocr_used", "ocr_pages", "pages", "ocr_truncated", "embedded_images_ocr", "vision_used", "pdf_tables"):
             if meta.get(k):
                 out["ocr" if k == "ocr_used" else ("vision" if k == "vision_used" else k)] = meta[k]
         return out
