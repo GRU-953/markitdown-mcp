@@ -1,5 +1,7 @@
 # MarkItDown Attachments — a token-free MCP server (with OCR)
 
+[![CI](https://github.com/GRU-953/markitdown-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/GRU-953/markitdown-mcp/actions/workflows/ci.yml)
+
 Convert Claude **chat & project attachments** (and any local files) to Markdown
 using Microsoft's [MarkItDown](https://github.com/microsoft/markitdown), **without
 spending context tokens on the file contents** — now with **OCR** for images and
